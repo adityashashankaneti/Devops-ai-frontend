@@ -1,0 +1,95 @@
+I'm building a DevOps cloud architecture diagramming tool (like Lucid but for AWS).
+It's a React 18 + Vite + TypeScript + Tailwind CSS + ReactFlow v11 app.
+
+## What's already built
+
+### Tech Stack
+- React 18 + Vite + TypeScript
+- Tailwind CSS (dark theme: slate-950 bg, slate-900 panels, slate-800 cards, indigo-600 accent)
+- ReactFlow v11 (`reactflow` package) — canvas, drag-drop, NodeResizer
+- lucide-react (icons)
+
+### App Layout (src/App.tsx)
+- TopNav with Architecture | DevOps Chatbot tab toggle
+- LeftSidebar (left, fixed width)
+- Main area: either ArchitectureCanvas or ChatbotView
+- PropertiesPanel (right side, appears when a node is selected)
+
+### LeftSidebar (src/components/LeftSidebar.tsx)
+- Cloud Provider toggle: AWS / Azure / GCP
+- Connectors panel: 4 edge styles (Arrow, Dashed, Thick, Bidirectional) with SVG previews
+- Collapsible resource categories (3-column grid of draggable ResourceTile components)
+- Bottom search input: as user types, shows filtered dropdown of matching resources
+- Both drag-and-drop AND click-to-place work for all resources
+- Search results support drag-and-drop (clears on dragEnd, not dragStart)
+
+### ArchitectureCanvas (src/components/ArchitectureCanvas.tsx)
+- ReactFlow canvas with 3 custom node types: `awsNode`, `containerNode`, `route53Node`
+- Drag-and-drop from sidebar (onDrop + onDragOver)
+- Click-to-place via custom window event `place-resource`
+- Container drop detection: computes absolute positions (walks parent chain), picks innermost (smallest area)
+- Placement validation: `getPlacementError()` for inside-container, `getStandalonePlacementError()` for standalone — shows red toast
+- Container nodes (subnets, AZs) also validated on drop (can nest inside allowed parents)
+- Auto-save to localStorage (debounced 1s) + restore on page load; manual Save button in TopNav
+- onNodeClick → onNodeSelect → PropertiesPanel
+- Exports `updateCanvasNodeConfig()` and `placeResourceOnCanvas()` via custom window events
+
+### Node Types
+1. `awsNode` (src/components/nodes/AWSNode.tsx)
+   - Colored badge with abbreviation (e.g. "EC2"), service name below
+   - 4 connection handles (top/bottom/left/right)
+   - Highlights with indigo border on selection
+
+2. `containerNode` (src/components/nodes/ContainerNode.tsx)
+   - Resizable via NodeResizer
+   - Dashed border + tinted background in resource color
+   - CIDR block label floats ABOVE the top border (absolute top: -22px, overflow: visible on wrapper)
+   - Shows `data.config?.name` or `data.name`
+   - Used for: VPC, Public Subnet, Private Subnet, Availability Zone, Security Group
+
+3. `route53Node` (src/components/nodes/Route53Node.tsx)
+   - Click header to toggle DNS records table (expand/collapse)
+   - Hosted zone name (e.g. "example.com") shown as inline editable input between icon and chevron
+   - DNS table has columns: Name, Type, Value, TTL + delete button
+   - Compact layout: 300px wide expanded table, small badge
+   - `nodrag` + stopPropagation on interactive elements so drag/canvas don't conflict
+
+### PropertiesPanel (src/components/PropertiesPanel.tsx)
+- Right panel (w-72), appears when node is selected
+- Loads field definitions from `getFieldsForResource(resource.id)`
+- Renders: text inputs, select dropdowns, textareas, toggle switches
+- Fields include: cidrBlock, name, instanceType, amiId, multiAZ, etc.
+- Calls `onUpdate(nodeId, config)` on each change
+
+### Data Files
+- `src/data/awsResources.ts` — 9 categories, 50+ AWS resources
+  - nodeType: 'container' → VPC, subnets, AZ, Security Group
+  - nodeType: 'expandable' → Route53
+  - nodeType: 'default' (or undefined) → everything else
+
+- `src/data/placementRules.ts` — ALLOWED_CONTAINERS map
+  - `undefined` = resource can go anywhere (e.g. Lambda)
+  - `[]` (empty array) = global service, cannot go inside any container
+  - `['vpc', 'availability-zone']` = must go inside one of these containers
+  - `getPlacementError(resource, container)` returns error string or null
+  - `getStandalonePlacementError(resource)` blocks standalone placement if parent required
+
+- `src/data/resourceFields.ts` — FieldDef[] per resource id
+  - getFieldsForResource(resourceId) with DEFAULT_FIELDS fallback
+
+### Types (src/types/index.ts)
+```typescript
+export type CloudProvider = 'aws' | 'azure' | 'gcp';
+export type AppMode = 'architecture' | 'chatbot';
+export type NodeType = 'default' | 'container' | 'expandable';
+export type ConnectorType = 'default' | 'dashed' | 'thick' | 'bidirectional';
+
+export interface AWSResource {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  color: string;
+  abbr: string;
+  nodeType?: NodeType;
+}
