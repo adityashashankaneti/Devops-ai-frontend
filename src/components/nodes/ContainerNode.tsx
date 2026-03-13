@@ -46,43 +46,23 @@ export default function ContainerNode({ data, selected }: NodeProps<NodeData>) {
         }}
       >
         {/* Top-left badge */}
-        <div className="absolute top-3 left-3 flex items-center gap-2 pointer-events-none select-none">
+        <div className="absolute top-3 left-3 flex items-center gap-2 select-none">
           <div
             className="w-6 h-6 rounded-md flex items-center justify-center text-white text-[9px] font-bold shadow"
             style={{ backgroundColor: data.color }}
           >
             {data.abbr}
           </div>
-          <span className="text-[11px] font-semibold" style={{ color: data.color }}>
+          <span className="pointer-events-none text-[11px] font-semibold" style={{ color: data.color }}>
             {label || data.name}
           </span>
         </div>
 
         {/* Handles */}
-        <Handle
-          type="target"
-          position={Position.Top}
-          className="!w-2.5 !h-2.5 !border-2 !border-slate-600"
-          style={{ background: data.color }}
-        />
-        <Handle
-          type="target"
-          position={Position.Left}
-          className="!w-2.5 !h-2.5 !border-2 !border-slate-600"
-          style={{ background: data.color }}
-        />
-        <Handle
-          type="source"
-          position={Position.Bottom}
-          className="!w-2.5 !h-2.5 !border-2 !border-slate-600"
-          style={{ background: data.color }}
-        />
-        <Handle
-          type="source"
-          position={Position.Right}
-          className="!w-2.5 !h-2.5 !border-2 !border-slate-600"
-          style={{ background: data.color }}
-        />
+        <Handle type="source" position={Position.Top}    id="top"    className="!w-3.5 !h-3.5 !border-2 !border-slate-300 !opacity-100 !rounded-full" style={{ background: data.color }} />
+        <Handle type="source" position={Position.Left}   id="left"   className="!w-3.5 !h-3.5 !border-2 !border-slate-300 !opacity-100 !rounded-full" style={{ background: data.color }} />
+        <Handle type="source" position={Position.Bottom} id="bottom" className="!w-3.5 !h-3.5 !border-2 !border-slate-300 !opacity-100 !rounded-full" style={{ background: data.color }} />
+        <Handle type="source" position={Position.Right}  id="right"  className="!w-3.5 !h-3.5 !border-2 !border-slate-300 !opacity-100 !rounded-full" style={{ background: data.color }} />
       </div>
     </div>
   );

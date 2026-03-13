@@ -10,9 +10,12 @@ import ReactFlow, {
   Connection,
   Edge,
   Node,
+  NodeChange,
+  EdgeChange,
   ReactFlowInstance,
   MarkerType,
   NodeMouseHandler,
+  ConnectionMode,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { MousePointer2, Layers, AlertCircle } from 'lucide-react';
@@ -74,9 +77,10 @@ function edgeOptions(type: ConnectorType) {
 interface Props {
   connectorType: ConnectorType;
   onNodeSelect: (node: Node<AWSResource> | null) => void;
+  onStateChange?: (nodes: Node[], edges: Edge[]) => void;
 }
 
-export default function ArchitectureCanvas({ connectorType, onNodeSelect }: Props) {
+export default function ArchitectureCanvas({ connectorType, onNodeSelect, onStateChange }: Props) {
   const wrapper = useRef<HTMLDivElement>(null);
   const savedState = useRef(loadSavedState());
   const initialNodes = savedState.current?.nodes ?? [];
@@ -89,6 +93,65 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect }: Prop
   const [toast, setToast] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Undo / Redo ────────────────────────────────────────────────────────────
+  const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+  useEffect(() => { edgesRef.current = edges; }, [edges]);
+
+  const undoStack = useRef<{ nodes: Node[]; edges: Edge[] }[]>([]);
+  const redoStack = useRef<{ nodes: Node[]; edges: Edge[] }[]>([]);
+  const isUndoRedoing = useRef(false);
+
+  const pushHistory = useCallback(() => {
+    if (isUndoRedoing.current) return;
+    undoStack.current.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    if (undoStack.current.length > 60) undoStack.current.shift();
+    redoStack.current = [];
+  }, []);
+
+  const undo = useCallback(() => {
+    if (undoStack.current.length === 0) return;
+    isUndoRedoing.current = true;
+    redoStack.current.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    const prev = undoStack.current.pop()!;
+    setNodes(prev.nodes);
+    setEdges(prev.edges);
+    requestAnimationFrame(() => { isUndoRedoing.current = false; });
+  }, [setNodes, setEdges]);
+
+  const redo = useCallback(() => {
+    if (redoStack.current.length === 0) return;
+    isUndoRedoing.current = true;
+    undoStack.current.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    const next = redoStack.current.pop()!;
+    setNodes(next.nodes);
+    setEdges(next.edges);
+    requestAnimationFrame(() => { isUndoRedoing.current = false; });
+  }, [setNodes, setEdges]);
+
+  // Keyboard shortcuts: Ctrl+Z = undo, Ctrl+Y / Ctrl+Shift+Z = redo
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (ctrl && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      if (ctrl && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [undo, redo]);
+
+  // Intercept delete changes to push history before they're applied
+  const handleNodesChange = useCallback((changes: NodeChange[]) => {
+    if (changes.some((c) => c.type === 'remove')) pushHistory();
+    onNodesChange(changes);
+  }, [onNodesChange, pushHistory]);
+
+  const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
+    if (changes.some((c) => c.type === 'remove')) pushHistory();
+    onEdgesChange(changes);
+  }, [onEdgesChange, pushHistory]);
 
   // Persist to localStorage
   const saveToStorage = useCallback(() => {
@@ -108,6 +171,11 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect }: Prop
     return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
   }, [nodes, edges, saveToStorage]);
 
+  // Expose current nodes/edges to parent for deploy bar
+  useEffect(() => {
+    onStateChange?.(nodes, edges);
+  }, [nodes, edges, onStateChange]);
+
   // Expose manual save via custom event
   useEffect(() => {
     const handler = () => saveToStorage();
@@ -126,11 +194,58 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect }: Prop
   };
 
   const currentEdgeOpts = edgeOptions(connectorType);
+  // Keep a ref so onConnectEnd can read the latest value without stale closure
+  const currentEdgeOptsRef = useRef(currentEdgeOpts);
+  useEffect(() => { currentEdgeOptsRef.current = currentEdgeOpts; }, [currentEdgeOpts]);
+
+  // Track whether onConnect already handled this drag (to avoid double-creating in onConnectEnd)
+  const connectionHandled = useRef(false);
+  // Track source node of an in-progress connection drag
+  const connectSourceId = useRef<string | null>(null);
 
   const onConnect = useCallback(
-    (params: Connection | Edge) => setEdges((eds) => addEdge({ ...params, ...currentEdgeOpts }, eds)),
-    [setEdges, currentEdgeOpts],
+    (params: Connection | Edge) => {
+      connectionHandled.current = true;
+      pushHistory();
+      setEdges((eds) => addEdge({ ...params, ...currentEdgeOpts }, eds));
+    },
+    [setEdges, currentEdgeOpts, pushHistory],
   );
+
+  const onConnectStart = useCallback((_: unknown, params: { nodeId?: string | null }) => {
+    connectSourceId.current = params.nodeId ?? null;
+    connectionHandled.current = false;
+  }, []);
+
+  // When user drops a connection on the BODY of a node (not on a specific handle),
+  // auto-create the edge so connecting works from anywhere → anywhere.
+  const onConnectEnd = useCallback((event: MouseEvent | TouchEvent) => {
+    if (connectionHandled.current) { connectionHandled.current = false; return; }
+    if (!connectSourceId.current) return;
+
+    const clientX = event instanceof TouchEvent ? event.changedTouches[0].clientX : (event as MouseEvent).clientX;
+    const clientY = event instanceof TouchEvent ? event.changedTouches[0].clientY : (event as MouseEvent).clientY;
+    const el = document.elementFromPoint(clientX, clientY);
+    if (!el) return;
+
+    // Ignore if released on a handle — ReactFlow would have fired onConnect in that case
+    if (el.closest('.react-flow__handle')) return;
+
+    const nodeEl = el.closest('.react-flow__node');
+    if (!nodeEl) return;
+
+    const targetNodeId = nodeEl.getAttribute('data-id');
+    if (!targetNodeId || targetNodeId === connectSourceId.current) return;
+
+    pushHistory();
+    setEdges((eds) => addEdge({
+      id: `e_${Date.now()}`,
+      source: connectSourceId.current!,
+      target: targetNodeId,
+      ...currentEdgeOptsRef.current,
+    }, eds));
+    connectSourceId.current = null;
+  }, [setEdges, pushHistory]);
 
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -186,6 +301,7 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect }: Prop
         const containerResource = container.data as AWSResource;
         const err = getPlacementError(resource, containerResource);
         if (err) { showToast(err); return; }
+        pushHistory();
 
         const absPos = getAbsolutePosition(container);
 
@@ -212,6 +328,7 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect }: Prop
         // Standalone placement — validate
         const standaloneErr = getStandalonePlacementError(resource);
         if (standaloneErr) { showToast(standaloneErr); return; }
+        pushHistory();
 
         if (type === 'containerNode') {
           setNodes((nds) => nds.concat({
@@ -281,6 +398,7 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect }: Prop
         type === 'containerNode'
           ? { id: getId(), type, position: { x: position.x - 160, y: position.y - 80 }, data: { ...resource, config: {} }, style: { width: 320, height: 200 }, zIndex: -1 }
           : { id: getId(), type, position: { x: position.x - 50, y: position.y - 50 }, data: { ...resource, config: {} } };
+      pushHistory();
       setNodes((nds) => nds.concat(newNode));
     };
     window.addEventListener('place-resource' as never, handler as EventListener);
@@ -294,9 +412,11 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect }: Prop
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
+        onNodesChange={handleNodesChange}
+        onEdgesChange={handleEdgesChange}
         onConnect={onConnect}
+        onConnectStart={onConnectStart}
+        onConnectEnd={onConnectEnd}
         onInit={setRfInstance}
         onDrop={onDrop}
         onDragOver={onDragOver}
@@ -305,6 +425,7 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect }: Prop
         nodeTypes={nodeTypes}
         fitView
         deleteKeyCode="Delete"
+        connectionMode={ConnectionMode.Loose}
         className="bg-slate-950"
         defaultEdgeOptions={currentEdgeOpts}
         connectionLineStyle={{ stroke: '#6366f1', strokeWidth: 2 }}
@@ -342,6 +463,7 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect }: Prop
           {toast}
         </div>
       )}
+
     </div>
   );
 }

@@ -44,16 +44,10 @@ export default function Route53Node({ data, selected }: NodeProps<AWSResource>) 
           : 'border-slate-600/80 hover:border-slate-400/60 bg-slate-800'
       }`}
     >
-      <Handle
-        type="target"
-        position={Position.Top}
-        className="!w-2 !h-2 !bg-indigo-500 !border-indigo-300 !border !-top-1"
-      />
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="!w-2 !h-2 !bg-indigo-500 !border-indigo-300 !border !-left-1"
-      />
+      <Handle type="source" position={Position.Top}    id="top"    className="!w-3.5 !h-3.5 !bg-indigo-500 !border-2 !border-indigo-200 !opacity-100 !rounded-full" />
+      <Handle type="source" position={Position.Left}   id="left"   className="!w-3.5 !h-3.5 !bg-indigo-500 !border-2 !border-indigo-200 !opacity-100 !rounded-full" />
+      <Handle type="source" position={Position.Bottom} id="bottom" className="!w-3.5 !h-3.5 !bg-indigo-500 !border-2 !border-indigo-200 !opacity-100 !rounded-full" />
+      <Handle type="source" position={Position.Right}  id="right"  className="!w-3.5 !h-3.5 !bg-indigo-500 !border-2 !border-indigo-200 !opacity-100 !rounded-full" />
 
       {/* Header — clickable to toggle, draggable */}
       <div
@@ -173,16 +167,7 @@ export default function Route53Node({ data, selected }: NodeProps<AWSResource>) 
         </div>
       )}
 
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="!w-2 !h-2 !bg-indigo-500 !border-indigo-300 !border !-bottom-1"
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!w-2 !h-2 !bg-indigo-500 !border-indigo-300 !border !-right-1"
-      />
+      {/* bottom/right already declared above with IDs */}
     </div>
   );
 }

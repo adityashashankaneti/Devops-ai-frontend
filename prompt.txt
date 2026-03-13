@@ -93,3 +93,320 @@ export interface AWSResource {
   abbr: string;
   nodeType?: NodeType;
 }
+```
+
+---
+
+## 3-Repo Architecture (Modular Terragrunt + YAML GitOps Pipeline)
+
+All repos live at `C:\Users\Aditya Shashank\Documents\Devops-repos\`:
+
+```
+Devops-ai-frontend/    ← REPO 1: React canvas UI (this repo)
+Devops-backend/        ← REPO 2: AWS Lambda (Python) — Claude classifies resources into YAML, pushes to infra-live
+devops-infra-live/     ← REPO 3: Reusable Terraform modules + Terragrunt configs + YAML resource definitions + GitHub Actions CI/CD
+```
+
+### Architecture Philosophy
+- **Claude does NOT generate raw Terraform code.** Claude classifies canvas resources into per-module-type YAML configs.
+- **Reusable Terraform modules** under `modules/` accept `for_each = var.resources` (a map of resource configs).
+- **Static Terragrunt files** under `environments/dev/<type>/terragrunt.hcl` point at the matching module and read `resources.yaml`.
+- **Lambda only appends** new resources to existing `resources.yaml` files (merge/append, not overwrite).
+- **GitHub Actions** detects changed project dirs and runs `terragrunt run-all plan/apply` per project.
+
+### End-to-End Deploy Flow
+1. User designs infra on canvas (VPC → Subnet → EC2, etc.), sets CIDRs/configs in PropertiesPanel
+2. Clicks **Deploy** in DeployBar → frontend POSTs nested JSON to Lambda via API Gateway
+3. Lambda calls Claude API with the JSON → Claude **classifies** resources by module type and returns per-type YAML configs (NOT raw .tf code)
+4. Lambda merges/appends the YAML configs into `environments/dev/<type>/resources.yaml` files in the `devops-infra-live` repo on branch `feature/<project>` + creates a Pull Request
+5. Frontend starts polling `GET /api/status?pr_url=...` every 10s for CI check status
+6. GitHub Actions runs `terragrunt run-all plan` on PR → posts plan output as PR comment
+7. User reviews and merges PR to main
+8. GitHub Actions runs `terragrunt run-all apply -auto-approve` → AWS infrastructure is deployed
+
+### Deploy Payload JSON Structure (nested, built by src/utils/deployPayload.ts)
+```json
+{
+  "project": "my-infra",
+  "region": "us-east-1",
+  "resources": [
+    {
+      "id": "node_0",
+      "resourceType": "vpc",
+      "name": "My VPC",
+      "properties": { "cidrBlock": "10.0.0.0/16", "dnsHostnames": true },
+      "children": [
+        {
+          "id": "node_1",
+          "resourceType": "subnet-public",
+          "name": "Public Subnet",
+          "properties": { "cidrBlock": "10.0.1.0/24" },
+          "children": [
+            { "id": "node_2", "resourceType": "ec2", "name": "Web Server", "properties": { "instanceType": "t3.micro" }, "children": [] }
+          ]
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "e_1",
+      "connectorType": "default",
+      "source": { "resourceId": "node_2", "resourceType": "ec2", "name": "Web Server" },
+      "target": { "resourceId": "node_4", "resourceType": "rds", "name": "Database" }
+    }
+  ]
+}
+```
+
+### Frontend Deploy Components (this repo)
+- `src/utils/deployPayload.ts` — `buildDeployPayload(nodes, edges, project, region)` walks ReactFlow node tree (using `parentNode` for nesting), builds the nested JSON above. Types: DeployResource, DeployConnection, DeployPayload
+- `src/components/DeployBar.tsx` — Fixed bottom bar with:
+  - Project name input + Region selector dropdown
+  - Resource/connection count display
+  - "Preview JSON" button → modal showing full payload with copy button
+  - "Deploy Infrastructure" button → POSTs to `VITE_DEPLOY_URL` (env var, defaults to `http://localhost:8000/api/deploy`)
+  - Success banner shows resource count, module types, branch name + "View PR" link
+  - **CI Status polling**: after successful deploy, polls `VITE_STATUS_URL` (GET /api/status) every 10s
+    - Shows spinner + "Terraform queued/running..." while pending/in_progress
+    - Shows green "Terraform plan succeeded" with check badges on success
+    - Shows red "Terraform failed" with links to logs on failure
+    - Stops polling on terminal states (success/failure/merged)
+  - Error banner with dismiss button
+- `src/components/ArchitectureCanvas.tsx` — Exposes `onStateChange(nodes, edges)` callback so App.tsx can pass current state to DeployBar
+
+### REPO 2: Devops-backend (Python Lambda + SAM)
+AWS Lambda behind API Gateway. Receives JSON, classifies resources via Claude, pushes YAML to infra-live.
+
+**Structure:**
+```
+Devops-backend/
+├── template.json              ← SAM template: Lambda + HttpApi (3 routes: deploy, status, health)
+├── requirements.txt           ← anthropic, pygithub, boto3, pyyaml
+├── test/event.json            ← Sample test event
+└── src/
+    ├── handler.py             ← Lambda entry: 3 endpoints (POST /api/deploy, GET /api/status, GET /api/health)
+    ├── generate_terraform.py  ← Claude classifies resources into per-module-type YAML configs (NOT raw .tf)
+    ├── git_push.py            ← PyGithub: merge/append YAML into environments/dev/<type>/resources.yaml, create PR
+    └── secrets_helper.py      ← AWS Secrets Manager with env-var fallback
+```
+
+**Env vars:** `ANTHROPIC_API_KEY`, `GITHUB_TOKEN` (repo scope), `GITHUB_REPO` (e.g. `your-org/devops-infra-live`)
+
+**handler.py — 3 Endpoints:**
+- `POST /api/deploy` — Full pipeline: Claude classify → build project.yaml → push YAML to GitHub → return PR URL
+- `GET /api/status?pr_url=<url>` — Poll CI/CD status of a PR (returns overall_status, checks, pr_state, pr_merged)
+- `GET /api/health` — Health check
+
+**generate_terraform.py — Claude Resource Classification:**
+- `RESOURCE_TYPE_MAP` — Maps 50+ frontend resource IDs to 18 module types (or None if unsupported)
+- `SUPPORTED_MODULES` — Set of module types with pre-built Terraform modules
+- `SYSTEM_PROMPT` — Instructs Claude to CLASSIFY resources AND process connections:
+  - Input: nested canvas JSON with resource hierarchy + connections
+  - Output: `{ "module_type": { "resource-name": { snake_case_config } } }`
+  - Cross-references: subnet→vpc_name, ec2→subnet_name+security_groups, sg→vpc_name, etc.
+  - Property mapping: cidrBlock→cidr_block, instanceType→instance_type, etc.
+  - **Connection-based access policies** (see below)
+- `generate_resource_yamls(payload, api_key)` → `dict[str, dict]` — calls Claude, parses JSON response
+- `build_project_yaml(project, region)` → string — generates project.yaml content
+- `resources_to_yaml(resource_map)` → `dict[str, str]` — converts per-type dicts to YAML strings
+
+**Connection-Based Access Policies (generated by Claude from canvas connections):**
+When a user draws a connection between two resources on the canvas, Claude generates
+three layers of access control:
+
+1. **Security Group Rules (network-level)**
+   Added as `ingress_rules[]` on the TARGET's security group config.
+   Supports both CIDR-based (`cidr_blocks`) and SG-to-SG (`source_security_group`) references.
+   ```yaml
+   # Connection: EC2 → RDS (PostgreSQL) generates:
+   rds-sg:
+     vpc_name: my-vpc
+     ingress_rules:
+       - from_port: 5432
+         to_port: 5432
+         protocol: tcp
+         source_security_group: web-server-sg   # SG-to-SG reference
+         description: "Allow PostgreSQL from web servers"
+   ```
+   Port rules: MySQL=3306, PostgreSQL=5432, Redis=6379, Memcached=11211, HTTP=80, HTTPS=443
+
+2. **IAM Policies (identity-based, least privilege)**
+   Added as `iam_policies[]` on Lambda/ECS configs. No wildcards — specific actions only.
+   ```yaml
+   # Connection: Lambda → DynamoDB generates:
+   my-function:
+     runtime: python3.12
+     iam_policies:
+       - sid: DynamoDBAccess
+         actions: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:Query, ...]
+         resources: ["arn:aws:dynamodb:*:*:table/my-table", "arn:aws:dynamodb:*:*:table/my-table/index/*"]
+   ```
+   Covers: DynamoDB, S3, SQS, SNS, EventBridge, RDS IAM auth
+
+3. **Resource-Based Policies (on the target)**
+   Added as `bucket_policy`, `queue_policy`, or `topic_policy` on the target resource.
+   ```yaml
+   # Connection: CloudFront → S3 generates bucket_policy on the S3 resource
+   # Connection: SNS → SQS generates queue_policy on the SQS resource
+   # Connection: EventBridge → SNS generates topic_policy on the SNS resource
+   ```
+
+**git_push.py — GitHub Operations:**
+- `push_to_infra_repo(...)` — Creates/resets feature branch, writes project.yaml, then for each module type:
+  - Reads existing `environments/dev/<type>/resources.yaml` from the branch
+  - Merges new resources into existing YAML (append new keys, overwrite existing)
+  - Writes merged YAML back (terragrunt.hcl already exists as a static file)
+  - Creates Pull Request with module type breakdown
+- `_merge_yaml_resources(existing_yaml, new_resources)` — YAML merge/append logic
+- `get_pr_status(github_token, repo_name, pr_url)` — Returns CI check status (overall_status, checks, pr_state, pr_merged)
+
+### REPO 3: devops-infra-live (Terraform Modules + Terragrunt + GitHub Actions)
+
+**Structure:**
+```
+devops-infra-live/
+├── modules/                              ← 18 reusable Terraform modules
+│   ├── vpc/                              ← main.tf, variables.tf, outputs.tf
+│   ├── subnet/
+│   ├── ec2/
+│   ├── security-group/
+│   ├── s3/
+│   ├── rds/
+│   ├── lambda/
+│   ├── alb/
+│   ├── internet-gateway/
+│   ├── nat-gateway/
+│   ├── route-table/
+│   ├── eventbridge/
+│   ├── sqs/
+│   ├── sns/
+│   ├── dynamodb/
+│   ├── route53/
+│   ├── ecs/
+│   ├── cloudfront/
+│   └── elasticache/
+├── environments/
+│   ├── terragrunt.hcl                    ← Root config: S3 remote state + AWS provider generation
+│   └── dev/                              ← Dev environment
+│       ├── project.yaml                  ← { project: "my-infra", region: "us-east-1" }
+│       ├── vpc/
+│       │   ├── terragrunt.hcl            ← Points at modules//vpc, reads resources.yaml
+│       │   └── resources.yaml            ← { my-vpc: { cidr_block: "10.0.0.0/16" } }
+│       ├── subnet/
+│       │   ├── terragrunt.hcl            ← Depends on vpc
+│       │   └── resources.yaml
+│       ├── security-group/
+│       │   ├── terragrunt.hcl            ← Depends on vpc
+│       │   └── resources.yaml
+│       ├── ec2/
+│       │   ├── terragrunt.hcl            ← Depends on subnet + security-group
+│       │   └── resources.yaml
+│       ├── s3/
+│       ├── rds/                          ← Depends on subnet + security-group
+│       ├── lambda/                       ← Depends on subnet + security-group
+│       ├── alb/                          ← Depends on vpc + subnet + security-group
+│       ├── internet-gateway/            ← Depends on vpc
+│       ├── nat-gateway/                 ← Depends on subnet
+│       ├── route-table/                 ← Depends on vpc + subnet + internet-gateway + nat-gateway
+│       ├── eventbridge/
+│       ├── sqs/
+│       ├── sns/
+│       ├── dynamodb/
+│       ├── route53/                     ← Depends on vpc
+│       ├── ecs/
+│       ├── cloudfront/
+│       └── elasticache/                 ← Depends on subnet + security-group
+├── .github/workflows/
+│   └── terraform.yml                    ← CI/CD pipeline with matrix per project
+└── README.md
+```
+
+**Terraform Modules Pattern:**
+Each module under `modules/<type>/` uses `for_each = var.resources` to accept a map of resource configs:
+```hcl
+# modules/ec2/main.tf
+resource "aws_instance" "this" {
+  for_each      = var.resources
+  ami           = each.value.ami
+  instance_type = each.value.instance_type
+  subnet_id     = try(var.subnet_ids[each.value.subnet_name], null)
+  ...
+}
+```
+Modules that depend on others accept output maps (e.g. `var.subnet_ids`, `var.security_group_ids`).
+
+**Access Policy Support in Modules:**
+- `modules/security-group/` — Supports both CIDR-based and SG-to-SG ingress rules via standalone
+  `aws_security_group_rule` resources. Ingress rules with `source_security_group` reference other SGs
+  by name within the same module (self-referencing `for_each`).
+- `modules/lambda/` — Supports `iam_policies[]` array on each function config. Each policy becomes an
+  `aws_iam_role_policy` inline policy on the Lambda's IAM role. Also auto-attaches
+  `AWSLambdaVPCAccessExecutionRole` when subnet_names is present. Outputs `role_arns` map.
+- `modules/s3/` — Supports optional `bucket_policy.statements[]` → creates `aws_s3_bucket_policy`.
+- `modules/sqs/` — Supports optional `queue_policy.statements[]` → creates `aws_sqs_queue_policy`.
+- `modules/sns/` — Supports optional `topic_policy.statements[]` → creates `aws_sns_topic_policy`.
+
+**Terragrunt Config Pattern:**
+Root `environments/terragrunt.hcl`:
+- S3 remote state with `${local.project}-tf-state` bucket
+- DynamoDB lock table `${local.project}-tf-lock`
+- Generates `provider.tf` and `backend.tf`
+- Reads `project.yaml` via `find_in_parent_folders()`
+
+Per-module `environments/dev/<type>/terragrunt.hcl`:
+```hcl
+include "root" { path = find_in_parent_folders() }
+terraform { source = "${get_repo_root()}/modules//<type>" }
+locals { config = yamldecode(file("resources.yaml")) }
+dependency "vpc" { config_path = "../vpc" ... }  # if needed
+inputs = { resources = local.config, ... }
+```
+
+**Dependency Wiring:**
+- subnet → vpc
+- security-group → vpc
+- ec2 → subnet + security-group
+- rds → subnet + security-group
+- lambda (in VPC) → subnet + security-group
+- alb → vpc + subnet + security-group
+- internet-gateway → vpc
+- nat-gateway → subnet
+- route-table → vpc + subnet + internet-gateway + nat-gateway
+- route53 → vpc
+- elasticache → subnet + security-group
+- s3, sqs, sns, eventbridge, dynamodb, cloudfront, ecs → no dependencies
+
+**Route Table Module:**
+Claude auto-generates route tables whenever subnets exist:
+- Public subnets → route table with `0.0.0.0/0 → IGW` + subnet associations
+- Private subnets → route table with `0.0.0.0/0 → NAT GW` + subnet associations
+- Auto-creates IGW/NAT GW if needed but not on the canvas
+```yaml
+# Example resources.yaml for route-table:
+public-rt:
+  vpc_name: my-vpc
+  routes:
+    - cidr_block: "0.0.0.0/0"
+      gateway_type: igw
+      gateway_name: my-igw
+  subnet_associations: [public-subnet-1]
+private-rt:
+  vpc_name: my-vpc
+  routes:
+    - cidr_block: "0.0.0.0/0"
+      gateway_type: nat
+      gateway_name: my-nat-gw
+  subnet_associations: [private-subnet-1]
+```
+
+**GitHub Actions workflow (terraform.yml):**
+- Triggers on: push to main (paths: environments/**) and PRs to main
+- 3 jobs: `detect` → `plan` (on PR) → `apply` (on merge)
+- `detect` job: finds changed project dirs under `environments/` using `git diff`
+- `plan` job: matrix strategy per project, runs `terragrunt run-all plan`, posts plan as PR comment
+- `apply` job: matrix strategy per project, runs `terragrunt run-all apply -auto-approve`
+- Terraform v1.7.5, Terragrunt v0.55.1
+
+**GitHub Secrets needed:** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
+**State backend:** S3 bucket + DynamoDB lock table (configured in root terragrunt.hcl)
