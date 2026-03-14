@@ -166,6 +166,7 @@ export default function App() {
               <DeployBar
                 nodes={canvasNodes}
                 edges={canvasEdges}
+                deployedNodeIds={deployedNodeIds}
                 onDeployStarted={handleDeployStarted}
                 onApplySucceeded={handleApplySucceeded}
                 onImportSucceeded={handleImportSucceeded}

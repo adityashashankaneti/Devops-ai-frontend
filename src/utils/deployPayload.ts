@@ -23,6 +23,7 @@ export interface DeployPayload {
   region: string;
   resources: DeployResource[];
   connections: DeployConnection[];
+  existing_resources: DeployResource[];
 }
 
 /**
@@ -44,6 +45,7 @@ export function buildDeployPayload(
   edges: Edge[],
   project = 'my-infra',
   region = 'us-east-1',
+  deployedNodeIds: ReadonlySet<string> = new Set(),
 ): DeployPayload {
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
@@ -65,6 +67,12 @@ export function buildDeployPayload(
   // Only top-level nodes (no parentNode) are roots
   const resources = nodes
     .filter((n) => !n.parentNode)
+    .map(buildResource);
+
+  // Already-deployed nodes sent as context so Claude can derive sensible defaults
+  // (e.g. subnet CIDRs from existing VPC CIDR)
+  const existing_resources = nodes
+    .filter((n) => deployedNodeIds.has(n.id) && !n.parentNode)
     .map(buildResource);
 
   const connections: DeployConnection[] = edges.map((edge) => {
@@ -93,5 +101,5 @@ export function buildDeployPayload(
     };
   });
 
-  return { project, region, resources, connections };
+  return { project, region, resources, connections, existing_resources };
 }

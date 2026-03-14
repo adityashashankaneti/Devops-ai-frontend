@@ -48,13 +48,14 @@ interface CIStatus {
 interface Props {
   nodes: Node[];
   edges: Edge[];
+  deployedNodeIds?: ReadonlySet<string>;
   onDeployStarted?: (project: string, region: string) => void;
   onApplySucceeded?: () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onImportSucceeded?: (importedNodes: any[], project: string, region: string) => void;
 }
 
-export default function DeployBar({ nodes, edges, onDeployStarted, onApplySucceeded, onImportSucceeded }: Props) {
+export default function DeployBar({ nodes, edges, deployedNodeIds = new Set(), onDeployStarted, onApplySucceeded, onImportSucceeded }: Props) {
   const [region, setRegion] = useState('us-east-1');
   const [model, setModel] = useState<ModelId>('claude-sonnet-4-6');
   const [projectName, setProjectName] = useState('my-infra');
@@ -108,8 +109,8 @@ export default function DeployBar({ nodes, edges, onDeployStarted, onApplySuccee
   }, [onApplySucceeded]);
 
   const getPayload = useCallback((): DeployPayload & { model: ModelId } => {
-    return { ...buildDeployPayload(nodes, edges, projectName, region), model };
-  }, [nodes, edges, projectName, region, model]);
+    return { ...buildDeployPayload(nodes, edges, projectName, region, deployedNodeIds), model };
+  }, [nodes, edges, projectName, region, deployedNodeIds, model]);
 
   const PROJECT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$|^[a-z0-9]{1,2}$/;
 
