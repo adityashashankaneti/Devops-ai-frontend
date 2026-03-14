@@ -48,9 +48,11 @@ interface CIStatus {
 interface Props {
   nodes: Node[];
   edges: Edge[];
+  onDeployStarted?: (project: string, region: string) => void;
+  onApplySucceeded?: () => void;
 }
 
-export default function DeployBar({ nodes, edges }: Props) {
+export default function DeployBar({ nodes, edges, onDeployStarted, onApplySucceeded }: Props) {
   const [region, setRegion] = useState('us-east-1');
   const [model, setModel] = useState<ModelId>('claude-sonnet-4-6');
   const [projectName, setProjectName] = useState('my-infra');
@@ -89,6 +91,10 @@ export default function DeployBar({ nodes, edges }: Props) {
         if (data.overall_status === 'success' || data.overall_status === 'failure' || data.pr_merged) {
           if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
           setPollingActive(false);
+          // Mark nodes as deployed when apply succeeds after PR merge
+          if (data.overall_status === 'success' && data.pr_merged) {
+            onApplySucceeded?.();
+          }
         }
       } catch {
         // Silently ignore polling errors
@@ -97,7 +103,7 @@ export default function DeployBar({ nodes, edges }: Props) {
 
     doCheck();
     pollIntervalRef.current = setInterval(doCheck, 10000); // poll every 10s
-  }, []);
+  }, [onApplySucceeded]);
 
   const getPayload = useCallback((): DeployPayload & { model: ModelId } => {
     return { ...buildDeployPayload(nodes, edges, projectName, region), model };
@@ -118,6 +124,7 @@ export default function DeployBar({ nodes, edges }: Props) {
     setDeployStatus('loading');
     setErrorMsg('');
     setDeployResult(null);
+    onDeployStarted?.(projectName, region);
 
     try {
       const res = await fetch(DEPLOY_URL, {
@@ -138,7 +145,7 @@ export default function DeployBar({ nodes, edges }: Props) {
       setDeployStatus('error');
       setErrorMsg(err instanceof Error ? err.message : 'Deployment failed');
     }
-  }, [nodes, deployStatus, getPayload]);
+  }, [nodes, deployStatus, projectName, region, getPayload, onDeployStarted]);
 
   const handleImport = useCallback(async () => {
     if (importStatus === 'loading') return;

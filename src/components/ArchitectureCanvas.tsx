@@ -81,7 +81,7 @@ interface Props {
   deployedNodeIds?: ReadonlySet<string>;
 }
 
-export default function ArchitectureCanvas({ connectorType, onNodeSelect, onStateChange }: Props) {
+export default function ArchitectureCanvas({ connectorType, onNodeSelect, onStateChange, deployedNodeIds }: Props) {
   const wrapper = useRef<HTMLDivElement>(null);
   const savedState = useRef(loadSavedState());
   const initialNodes = savedState.current?.nodes ?? [];
@@ -143,11 +143,18 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect, onStat
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [undo, redo]);
 
-  // Intercept delete changes to push history before they're applied
+  // Intercept delete changes — block deletion of deployed nodes, push history for the rest
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
-    if (changes.some((c) => c.type === 'remove')) pushHistory();
-    onNodesChange(changes);
-  }, [onNodesChange, pushHistory]);
+    const filtered = changes.filter((c) => {
+      if (c.type === 'remove' && deployedNodeIds?.has(c.id)) {
+        showToast('Deployed resources are locked. Use Destroy in the Properties panel to remove from AWS first.');
+        return false;
+      }
+      return true;
+    });
+    if (filtered.some((c) => c.type === 'remove')) pushHistory();
+    onNodesChange(filtered);
+  }, [onNodesChange, pushHistory, deployedNodeIds]);
 
   const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
     if (changes.some((c) => c.type === 'remove')) pushHistory();
@@ -392,6 +399,18 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect, onStat
     window.addEventListener('update-node-config' as never, handler as EventListener);
     return () => window.removeEventListener('update-node-config' as never, handler as EventListener);
   }, [updateNodeConfig]);
+
+  // Programmatically delete a node (called after successful destroy)
+  useEffect(() => {
+    const handler = (e: CustomEvent) => {
+      const { nodeId } = e.detail;
+      pushHistory();
+      setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+      setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    };
+    window.addEventListener('delete-canvas-node' as never, handler as EventListener);
+    return () => window.removeEventListener('delete-canvas-node' as never, handler as EventListener);
+  }, [setNodes, setEdges, pushHistory]);
 
   // Load imported canvas state (replaces current nodes/edges)
   useEffect(() => {

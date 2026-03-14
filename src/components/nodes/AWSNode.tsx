@@ -1,17 +1,30 @@
 import { Handle, Position, NodeProps } from 'reactflow';
+import { Lock } from 'lucide-react';
 import { AWSResource } from '../../types';
+import { useIsNodeDeployed } from '../../contexts/DeployedNodesContext';
 
 const H = '!w-3.5 !h-3.5 !bg-indigo-500 !border-2 !border-indigo-200 !opacity-100 !rounded-full';
 
-export default function AWSNode({ data, selected }: NodeProps<AWSResource>) {
+export default function AWSNode({ id, data, selected }: NodeProps<AWSResource>) {
+  const isDeployed = useIsNodeDeployed(id);
+
   return (
     <div
       className={`relative min-w-[90px] rounded-xl border transition-all duration-150 select-none ${
-        selected
-          ? 'border-indigo-400/80 shadow-lg shadow-indigo-500/20 bg-slate-700'
-          : 'border-slate-600/80 hover:border-slate-400/60 bg-slate-800'
+        isDeployed
+          ? selected
+            ? 'border-emerald-400 shadow-lg shadow-emerald-500/30 bg-slate-700'
+            : 'border-emerald-500/70 shadow-md shadow-emerald-500/10 bg-slate-800'
+          : selected
+            ? 'border-indigo-400/80 shadow-lg shadow-indigo-500/20 bg-slate-700'
+            : 'border-slate-600/80 hover:border-slate-400/60 bg-slate-800'
       }`}
     >
+      {/* Deployed indicator strip */}
+      {isDeployed && (
+        <div className="absolute inset-x-0 top-0 h-0.5 rounded-t-xl bg-emerald-500/80" />
+      )}
+
       <Handle type="source" position={Position.Top}    id="top"    className={H} />
       <Handle type="source" position={Position.Left}   id="left"   className={H} />
       <Handle type="source" position={Position.Bottom} id="bottom" className={H} />
@@ -27,6 +40,12 @@ export default function AWSNode({ data, selected }: NodeProps<AWSResource>) {
         <span className="text-slate-200 text-[10px] font-medium text-center leading-tight max-w-[80px]">
           {data.name}
         </span>
+        {isDeployed && (
+          <span className="flex items-center gap-0.5 text-[9px] text-emerald-400 font-semibold">
+            <Lock size={8} />
+            live
+          </span>
+        )}
       </div>
     </div>
   );
