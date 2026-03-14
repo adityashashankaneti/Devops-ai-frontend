@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Bot, User, Sparkles } from 'lucide-react';
+import { Send, Bot, User, Sparkles, AlertCircle } from 'lucide-react';
 import { ChatMessage } from '../types';
+
+const CHAT_URL = import.meta.env.VITE_CHAT_URL ?? 'http://localhost:8000/api/chat';
 
 const SUGGESTIONS = [
   'Design a 3-tier web architecture on AWS',
@@ -11,195 +13,11 @@ const SUGGESTIONS = [
   'Design a serverless event-driven pipeline on AWS',
 ];
 
-function getAIResponse(input: string): string {
-  const q = input.toLowerCase();
-
-  if (q.includes('vpc') || q.includes('subnet')) {
-    return `**VPC Architecture Best Practices**
-
-A well-designed VPC typically follows this pattern:
-
-\`\`\`
-CIDR: 10.0.0.0/16
-├── Public Subnets  (10.0.1.0/24, 10.0.2.0/24) — 2 AZs
-│   ├── Internet Gateway → Route Table
-│   ├── NAT Gateway (one per AZ for HA)
-│   └── Bastion Host / ALB
-└── Private Subnets (10.0.10.0/24, 10.0.20.0/24)
-    ├── Application Tier (EC2 / ECS)
-    └── Data Tier (RDS Multi-AZ, ElastiCache)
-\`\`\`
-
-**Key Components:**
-- **Internet Gateway** — bidirectional internet access for public subnets
-- **NAT Gateway** — outbound-only internet for private subnets (place in public subnet)
-- **Security Groups** — stateful instance-level firewall
-- **NACLs** — stateless subnet-level firewall
-
-**Pro Tips:**
-1. Always deploy across ≥2 Availability Zones
-2. Use VPC Flow Logs for traffic visibility
-3. Enable DNS hostnames + DNS resolution
-4. Size subnets with room to grow — /24 is usually enough per subnet`;
-  }
-
-  if (q.includes('nat') && q.includes('internet gateway')) {
-    return `**NAT Gateway vs Internet Gateway — Key Differences**
-
-| Feature | Internet Gateway | NAT Gateway |
-|---|---|---|
-| Direction | Bidirectional | Outbound only |
-| Subnet type | Public | Private (deployed in public) |
-| Requires public IP | Yes (Elastic IP on instance) | No (NAT translates) |
-| Cost | Free | ~$0.045/hr + $0.045/GB |
-| HA | Inherently HA | Deploy one per AZ |
-
-**When to use:**
-- **IGW** → Web servers, bastion hosts, load balancers that need inbound traffic
-- **NAT GW** → App servers, DB instances that need to pull updates but shouldn't be directly reachable`;
-  }
-
-  if (q.includes('eks') || q.includes('kubernetes')) {
-    return `**EKS Deployment Best Practices**
-
-**Infrastructure:**
-- Use Managed Node Groups (automated patching)
-- Spread across 3 AZs minimum
-- Use Spot Instances for non-critical workloads (Karpenter handles this well)
-
-**Networking:**
-- AWS VPC CNI — native pod networking
-- Enable pod-level Security Groups (SGPP)
-- Use AWS Load Balancer Controller for ALB Ingress
-
-**Security:**
-- IRSA (IAM Roles for Service Accounts) — never use EC2 instance profiles
-- Enable Envelope Encryption for Kubernetes secrets
-- Use OPA Gatekeeper or Kyverno for policy enforcement
-
-**Observability:**
-- Container Insights → CloudWatch
-- AWS Distro for OpenTelemetry (ADOT)
-- Fluent Bit for log aggregation → CloudWatch Logs
-
-**Scaling:**
-- HPA (CPU/memory) for pod scaling
-- Karpenter for intelligent node provisioning (faster than Cluster Autoscaler)`;
-  }
-
-  if (q.includes('rds') || q.includes('database') || q.includes('highly available')) {
-    return `**Highly Available RDS Architecture**
-
-\`\`\`
-                    ┌─────────────────┐
-                    │   Application   │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │   RDS Proxy     │  ← Connection pooling
-                    └────────┬────────┘
-                             │
-           ┌─────────────────┴──────────────────┐
-           │                                     │
-  ┌────────▼──────────┐               ┌──────────▼────────┐
-  │  Primary (AZ-a)   │──Sync repl──► │  Standby (AZ-b)   │
-  │  db.r6g.large     │               │  (Auto-failover)  │
-  └───────────────────┘               └───────────────────┘
-\`\`\`
-
-**Key Settings:**
-- Multi-AZ enabled (automatic failover ~60-120s)
-- Read Replicas for read scaling (up to 15)
-- RDS Proxy — reduces connection storms, IAM auth
-- Automated backups: 7-35 day retention
-- Enable Performance Insights + Enhanced Monitoring
-- Use Aurora for PostgreSQL/MySQL — better failover (~30s)`;
-  }
-
-  if (q.includes('serverless') || q.includes('lambda') || q.includes('event')) {
-    return `**Serverless Event-Driven Pipeline on AWS**
-
-\`\`\`
-Client → API Gateway → Lambda → SQS → Lambda → DynamoDB
-                                  ↓
-                               SNS → Email/SMS/Slack
-                                  ↓
-                           EventBridge → Step Functions
-\`\`\`
-
-**Architecture Pattern:**
-1. **API Gateway** — REST or HTTP API endpoint
-2. **Lambda** — process, validate, transform events
-3. **SQS** — decouple services, handle bursts (DLQ for failures)
-4. **EventBridge** — route events between services
-5. **Step Functions** — orchestrate multi-step workflows
-
-**Best Practices:**
-- Keep Lambda functions small and single-purpose
-- Use SQS between Lambda for retry + backpressure
-- Set Reserved Concurrency to protect downstream services
-- Use Lambda Layers for shared code/dependencies
-- Enable X-Ray tracing across all services`;
-  }
-
-  if (q.includes('3-tier') || q.includes('three tier') || q.includes('web architecture')) {
-    return `**3-Tier Web Architecture on AWS**
-
-\`\`\`
-Internet
-   │
-   ▼
-Route 53 (DNS)
-   │
-   ▼
-CloudFront (CDN + WAF)
-   │
-   ▼
-ALB (Application Load Balancer)
-   │
-   ├── EC2 / ECS (Web Tier) — Public Subnet
-   │
-   ▼
-ALB (Internal)
-   │
-   ├── EC2 / ECS (App Tier) — Private Subnet
-   │
-   ▼
-RDS Multi-AZ + ElastiCache — Data Subnet
-\`\`\`
-
-**Components to drag onto canvas:**
-- Route 53 → CloudFront → WAF → ALB
-- EC2 (web) in Auto Scaling Group
-- EC2 (app) in Auto Scaling Group
-- RDS Multi-AZ + ElastiCache
-- S3 for static assets
-- NAT Gateway for private subnet egress`;
-  }
-
-  return `Great question about **"${input}"**!
-
-Here's how I'd approach this from a DevOps perspective:
-
-**Architecture Principles:**
-1. **High Availability** — deploy across multiple AZs, use managed services
-2. **Security** — least privilege IAM, encryption at rest/transit, VPC isolation
-3. **Scalability** — auto-scaling groups, serverless where appropriate
-4. **Observability** — CloudWatch metrics, logs, alarms, X-Ray tracing
-5. **Cost Optimization** — right-size instances, use Spot/Reserved for savings
-
-**Recommended Next Steps:**
-- Drag relevant AWS resources onto the Architecture canvas
-- Connect them to visualize the data flow
-- Switch back to Architecture mode to start designing
-
-Would you like me to go deeper on any specific aspect — networking, security, scaling strategy, or CI/CD setup?`;
-}
-
 export default function ChatbotView() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [error, setError] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -208,7 +26,7 @@ export default function ChatbotView() {
   }, [messages, isTyping]);
 
   const sendMessage = useCallback(
-    (content: string) => {
+    async (content: string) => {
       const text = content.trim();
       if (!text || isTyping) return;
 
@@ -219,30 +37,46 @@ export default function ChatbotView() {
         timestamp: new Date(),
       };
 
-      setMessages((prev) => [...prev, userMsg]);
+      const updatedMessages = [...messages, userMsg];
+      setMessages(updatedMessages);
       setInput('');
+      setError('');
       setIsTyping(true);
 
-      // Auto-resize textarea back to 1 row
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
       }
 
-      setTimeout(
-        () => {
-          const aiMsg: ChatMessage = {
-            id: `${Date.now()}-a`,
-            role: 'assistant',
-            content: getAIResponse(text),
-            timestamp: new Date(),
-          };
-          setMessages((prev) => [...prev, aiMsg]);
-          setIsTyping(false);
-        },
-        900 + Math.random() * 800,
-      );
+      try {
+        const res = await fetch(CHAT_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: updatedMessages.map(({ role, content }) => ({ role, content })),
+          }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error ?? `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+
+        const aiMsg: ChatMessage = {
+          id: `${Date.now()}-a`,
+          role: 'assistant',
+          content: data.reply,
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, aiMsg]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to reach backend');
+      } finally {
+        setIsTyping(false);
+      }
     },
-    [isTyping],
+    [isTyping, messages],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -379,9 +213,12 @@ export default function ChatbotView() {
               <Send size={13} className="text-white" />
             </button>
           </div>
-          <p className="text-center text-slate-700 text-[10px] mt-2">
-            Responses are simulated · Connect Claude or GPT API for live AI
-          </p>
+          {error && (
+            <div className="flex items-center gap-2 mt-2 text-[10px] text-red-400">
+              <AlertCircle size={11} />
+              {error}
+            </div>
+          )}
         </div>
       </div>
     </div>
