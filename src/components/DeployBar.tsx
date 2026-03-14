@@ -13,6 +13,13 @@ const REGIONS = [
   'sa-east-1',
 ];
 
+const MODELS = [
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', description: 'Fast & cost-efficient' },
+  { id: 'claude-opus-4-6',   label: 'Opus 4.6',   description: 'Most capable' },
+] as const;
+
+type ModelId = typeof MODELS[number]['id'];
+
 interface DeployResult {
   branch: string;
   commit_sha: string;
@@ -43,7 +50,9 @@ interface Props {
 
 export default function DeployBar({ nodes, edges }: Props) {
   const [region, setRegion] = useState('us-east-1');
+  const [model, setModel] = useState<ModelId>('claude-sonnet-4-6');
   const [projectName, setProjectName] = useState('my-infra');
+  const [projectNameError, setProjectNameError] = useState('');
   const [deployStatus, setDeployStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [deployResult, setDeployResult] = useState<DeployResult | null>(null);
@@ -86,13 +95,20 @@ export default function DeployBar({ nodes, edges }: Props) {
     pollIntervalRef.current = setInterval(doCheck, 10000); // poll every 10s
   }, []);
 
-  const getPayload = useCallback((): DeployPayload => {
-    return buildDeployPayload(nodes, edges, projectName, region);
-  }, [nodes, edges, projectName, region]);
+  const getPayload = useCallback((): DeployPayload & { model: ModelId } => {
+    return { ...buildDeployPayload(nodes, edges, projectName, region), model };
+  }, [nodes, edges, projectName, region, model]);
+
+  const PROJECT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$|^[a-z0-9]{1,2}$/;
 
   const handleDeploy = useCallback(async () => {
     if (nodes.length === 0) return;
     if (deployStatus === 'loading') return;
+    if (!PROJECT_NAME_RE.test(projectName)) {
+      setProjectNameError('Use lowercase letters, numbers, and hyphens only (e.g. my-infra)');
+      return;
+    }
+    setProjectNameError('');
 
     const payload = getPayload();
     setDeployStatus('loading');
@@ -249,13 +265,23 @@ export default function DeployBar({ nodes, edges }: Props) {
           {/* Project name */}
           <div className="flex items-center gap-2">
             <label className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold">Project</label>
-            <input
-              type="text"
-              value={projectName}
-              onChange={(e) => setProjectName(e.target.value)}
-              className="bg-slate-800/80 border border-slate-700/60 rounded-lg px-2.5 py-1 text-xs text-slate-200 outline-none focus:border-indigo-500/60 w-28 transition-colors placeholder:text-slate-600"
-              placeholder="my-infra"
-            />
+            <div className="flex flex-col gap-0.5">
+              <input
+                type="text"
+                value={projectName}
+                onChange={(e) => {
+                  setProjectName(e.target.value);
+                  if (projectNameError) setProjectNameError('');
+                }}
+                className={`bg-slate-800/80 border rounded-lg px-2.5 py-1 text-xs text-slate-200 outline-none w-28 transition-colors placeholder:text-slate-600 ${
+                  projectNameError ? 'border-red-500/70 focus:border-red-400' : 'border-slate-700/60 focus:border-indigo-500/60'
+                }`}
+                placeholder="my-infra"
+              />
+              {projectNameError && (
+                <span className="text-[9px] text-red-400 leading-tight">{projectNameError}</span>
+              )}
+            </div>
           </div>
 
           {/* Region selector */}
@@ -268,6 +294,23 @@ export default function DeployBar({ nodes, edges }: Props) {
                 className="bg-slate-800/80 border border-slate-700/60 rounded-lg px-2.5 py-1 pr-7 text-xs text-slate-200 outline-none focus:border-indigo-500/60 appearance-none cursor-pointer transition-colors"
               >
                 {REGIONS.map((r) => (<option key={r} value={r}>{r}</option>))}
+              </select>
+              <ChevronDown size={10} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Model selector */}
+          <div className="flex items-center gap-2 relative">
+            <label className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold">Model</label>
+            <div className="relative">
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value as ModelId)}
+                className="bg-slate-800/80 border border-slate-700/60 rounded-lg px-2.5 py-1 pr-7 text-xs text-slate-200 outline-none focus:border-indigo-500/60 appearance-none cursor-pointer transition-colors"
+              >
+                {MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label} — {m.description}</option>
+                ))}
               </select>
               <ChevronDown size={10} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
             </div>
@@ -369,6 +412,9 @@ export default function DeployBar({ nodes, edges }: Props) {
               </span>
               <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full bg-slate-800 border border-slate-700/60 text-slate-300">
                 {payload.project}
+              </span>
+              <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full bg-violet-900/40 border border-violet-600/40 text-violet-300">
+                {MODELS.find(m => m.id === model)?.label ?? model}
               </span>
               <span className="text-[10px] text-slate-500">
                 {payload.resources.length} top-level resource{payload.resources.length !== 1 ? 's' : ''} ·{' '}

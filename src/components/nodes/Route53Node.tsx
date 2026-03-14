@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { ChevronDown, Plus, Trash2 } from 'lucide-react';
 import { AWSResource } from '../../types';
+import { updateCanvasNodeConfig } from '../ArchitectureCanvas';
 
 const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SOA', 'SRV', 'PTR', 'CAA'];
 
@@ -21,13 +22,27 @@ const defaultRecord = (): DnsRecord => ({
   ttl: '300',
 });
 
-export default function Route53Node({ data, selected }: NodeProps<AWSResource>) {
+export default function Route53Node({ id: nodeId, data, selected }: NodeProps<AWSResource>) {
+  const cfg = (data as AWSResource & { config?: Record<string, unknown> }).config ?? {};
   const [expanded, setExpanded] = useState(false);
-  const [hostedZone, setHostedZone] = useState('example.com');
-  const [records, setRecords] = useState<DnsRecord[]>([
-    { id: '1', name: '@', type: 'A', value: '0.0.0.0', ttl: '300' },
-    { id: '2', name: 'www', type: 'CNAME', value: '', ttl: '300' },
-  ]);
+  const [hostedZone, setHostedZone] = useState((cfg.hostedZone as string) || 'example.com');
+  const [records, setRecords] = useState<DnsRecord[]>(
+    (cfg.records as DnsRecord[]) ?? [
+      { id: '1', name: '@', type: 'A', value: '0.0.0.0', ttl: '300' },
+      { id: '2', name: 'www', type: 'CNAME', value: '', ttl: '300' },
+    ],
+  );
+
+  // Sync state into node.data.config whenever it changes so deploy payload captures it
+  const syncToNode = useCallback(
+    (zone: string, recs: DnsRecord[]) => {
+      updateCanvasNodeConfig(nodeId, { ...cfg, hostedZone: zone, records: recs });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [nodeId],
+  );
+
+  useEffect(() => { syncToNode(hostedZone, records); }, [hostedZone, records, syncToNode]);
 
   const addRecord = () => setRecords((r) => [...r, defaultRecord()]);
 

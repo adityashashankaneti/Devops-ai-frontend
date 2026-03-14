@@ -68,8 +68,8 @@ export function buildDeployPayload(
     .map(buildResource);
 
   const connections: DeployConnection[] = edges.map((edge) => {
-    const src = nodeMap.get(edge.source)?.data as AWSResource | undefined;
-    const tgt = nodeMap.get(edge.target)?.data as AWSResource | undefined;
+    const src = nodeMap.get(edge.source)?.data as (AWSResource & { config?: Record<string, unknown> }) | undefined;
+    const tgt = nodeMap.get(edge.target)?.data as (AWSResource & { config?: Record<string, unknown> }) | undefined;
 
     // Derive connector type from edge visual style
     let connectorType = 'default';
@@ -83,12 +83,12 @@ export function buildDeployPayload(
       source: {
         resourceId: edge.source,
         resourceType: src?.id ?? 'unknown',
-        name: src?.name ?? 'Unknown',
+        name: (src?.config?.name as string) || src?.name || 'Unknown',
       },
       target: {
         resourceId: edge.target,
         resourceType: tgt?.id ?? 'unknown',
-        name: tgt?.name ?? 'Unknown',
+        name: (tgt?.config?.name as string) || tgt?.name || 'Unknown',
       },
     };
   });

@@ -163,9 +163,16 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect, onStat
     setTimeout(() => setSaveStatus('idle'), 1500);
   }, [nodes, edges]);
 
-  // Auto-save on changes (debounced 1s)
+  // Track whether the canvas has ever been populated (to distinguish "user cleared" from "initial empty mount")
+  const hasBeenPopulated = useRef(initialNodes.length > 0);
   useEffect(() => {
-    if (nodes.length === 0 && edges.length === 0) return;
+    if (nodes.length > 0) hasBeenPopulated.current = true;
+  }, [nodes.length]);
+
+  // Auto-save on changes (debounced 1s)
+  // Skip only on the initial empty mount, not when the user deliberately clears the canvas.
+  useEffect(() => {
+    if (nodes.length === 0 && edges.length === 0 && !hasBeenPopulated.current) return;
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     autoSaveTimer.current = setTimeout(() => saveToStorage(), 1000);
     return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
@@ -301,6 +308,15 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect, onStat
         const containerResource = container.data as AWSResource;
         const err = getPlacementError(resource, containerResource);
         if (err) { showToast(err); return; }
+
+        // Warn (non-blocking) when an internet-facing load balancer lands in a private subnet
+        if (
+          (resource.id === 'alb' || resource.id === 'nlb') &&
+          containerResource.id === 'subnet-private'
+        ) {
+          showToast(`⚠️ ${resource.name} is internet-facing by default — place in a Public Subnet unless you set internal: true.`);
+        }
+
         pushHistory();
 
         const absPos = getAbsolutePosition(container);
@@ -357,9 +373,9 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect, onStat
 
   const onPaneClick = useCallback(() => onNodeSelect(null), [onNodeSelect]);
 
-  // Update node config from properties panel
+  // Update node config from properties panel or from node-internal state (e.g. Route53Node)
   const updateNodeConfig = useCallback(
-    (nodeId: string, config: Record<string, string | boolean | number>) => {
+    (nodeId: string, config: Record<string, unknown>) => {
       setNodes((nds) =>
         nds.map((n) =>
           n.id === nodeId ? { ...n, data: { ...n.data, config } } : n,
@@ -468,7 +484,7 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect, onStat
   );
 }
 
-export function updateCanvasNodeConfig(id: string, config: Record<string, string | boolean | number>) {
+export function updateCanvasNodeConfig(id: string, config: Record<string, unknown>) {
   window.dispatchEvent(new CustomEvent('update-node-config', { detail: { id, config } }));
 }
 

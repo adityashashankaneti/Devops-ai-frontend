@@ -408,5 +408,44 @@ private-rt:
 - `apply` job: matrix strategy per project, runs `terragrunt run-all apply -auto-approve`
 - Terraform v1.7.5, Terragrunt v0.55.1
 
-**GitHub Secrets needed:** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
+**GitHub Secrets needed:** `AWS_ROLE_ARN`, `AWS_REGION`
 **State backend:** S3 bucket + DynamoDB lock table (configured in root terragrunt.hcl)
+
+---
+
+## Current Deployment Decisions
+
+### Devops-backend secret management
+- `Devops-backend/template.json` is configured to read Anthropic from AWS Secrets Manager via:
+  - `ANTHROPIC_API_KEY_SECRET_ARN = arn:aws:secretsmanager:us-west-2:978184426471:secret:devops-ai/anthropic-api-key-DF5uC8`
+- The secret name is `devops-ai/anthropic-api-key`
+- The Secrets Manager value should be valid JSON in this format:
+  - `{"ANTHROPIC_API_KEY":"REPLACE_ME"}`
+- `src/secrets_helper.py` reads Secrets Manager first and falls back to env vars for local dev
+- `GITHUB_TOKEN_SECRET_ARN` still needs to be filled with a GitHub token secret ARN if GitHub PAT access is moved to Secrets Manager
+
+### Devops-backend GitHub Actions
+- `Devops-backend/.github/workflows/deploy.yml` was added
+- Workflow behavior:
+  - PRs to `main`: run `sam validate` and `sam build`
+  - Pushes to `main`: deploy the SAM stack automatically
+- Backend GitHub Actions uses GitHub OIDC and AWS role assumption, not static AWS keys
+- Required GitHub configuration for `Devops-backend`:
+  - Secret: `AWS_ROLE_ARN`
+  - Secret: `AWS_REGION`
+  - Variable: `SAM_STACK_NAME` (defaults to `devops-backend`)
+
+### devops-infra-live GitHub Actions auth
+- `devops-infra-live/.github/workflows/terraform.yml` was updated to use GitHub OIDC with:
+  - `permissions.id-token: write`
+  - `role-to-assume: ${{ secrets.AWS_ROLE_ARN }}`
+- `devops-infra-live` no longer expects `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in GitHub Actions
+- Required GitHub secrets for `devops-infra-live` are now:
+  - `AWS_ROLE_ARN`
+  - `AWS_REGION`
+
+### AWS auth notes
+- Verified working IAM user credentials for `arn:aws:iam::978184426471:user/gha_user`
+- This is an IAM user, not an assumed role session
+- If future work needs assumed-role credentials, the returned STS ARN should look like:
+  - `arn:aws:sts::ACCOUNT_ID:assumed-role/ROLE_NAME/SESSION_NAME`

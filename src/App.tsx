@@ -25,7 +25,7 @@ export default function App() {
   }, []);
 
   const handleNodeUpdate = useCallback(
-    (nodeId: string, config: Record<string, string | boolean | number>) => {
+    (nodeId: string, config: Record<string, unknown>) => {
       setSelectedNode((prev) =>
         prev && prev.id === nodeId ? { ...prev, data: { ...prev.data, config } } : prev,
       );
