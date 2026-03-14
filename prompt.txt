@@ -61,6 +61,24 @@ It's a React 18 + Vite + TypeScript + Tailwind CSS + ReactFlow v11 app.
 - Fields include: cidrBlock, name, instanceType, amiId, multiAZ, etc.
 - Calls `onUpdate(nodeId, config)` on each change
 
+### DeployBar (src/components/DeployBar.tsx)
+- Fixed bottom bar with:
+  - Project name input + Region selector dropdown
+  - **Model selector**: Sonnet 4.6 (fast/cheap) vs Opus 4.6 (most capable) — sent as `model` field in POST body
+  - Resource/connection count display
+  - "Preview JSON" button → modal showing full payload with copy button + model badge
+  - "Deploy Infrastructure" button → POSTs to `VITE_DEPLOY_URL`
+  - Success banner shows resource count, module types, branch name + "View PR" link
+  - CI Status polling: after deploy, polls `VITE_STATUS_URL` every 10s
+  - Error banner with dismiss button
+
+### ChatbotView (src/components/ChatbotView.tsx)
+- Real Claude-powered chatbot (NOT fake/hardcoded responses)
+- POSTs to `VITE_CHAT_URL` (defaults to `http://localhost:8000/api/chat`)
+- Sends full conversation history for context
+- Shows inline error with **Retry button** when request fails (replays last message history)
+- Suggestion chips on empty state
+
 ### Data Files
 - `src/data/awsResources.ts` — 9 categories, 50+ AWS resources
   - nodeType: 'container' → VPC, subnets, AZ, Security Group
@@ -95,6 +113,13 @@ export interface AWSResource {
 }
 ```
 
+### Frontend Environment (.env.local)
+```
+VITE_DEPLOY_URL=https://swocff3ol9.execute-api.us-west-2.amazonaws.com/api/deploy
+VITE_STATUS_URL=https://swocff3ol9.execute-api.us-west-2.amazonaws.com/api/status
+VITE_CHAT_URL=https://swocff3ol9.execute-api.us-west-2.amazonaws.com/api/chat
+```
+
 ---
 
 ## 3-Repo Architecture (Modular Terragrunt + YAML GitOps Pipeline)
@@ -103,8 +128,13 @@ All repos live at `C:\Users\Aditya Shashank\Documents\Devops-repos\`:
 
 ```
 Devops-ai-frontend/    ← REPO 1: React canvas UI (this repo)
+  GitHub: adityashashankaneti/Devops-ai-frontend (assumed)
+
 Devops-backend/        ← REPO 2: AWS Lambda (Python) — Claude classifies resources into YAML, pushes to infra-live
+  GitHub: adityashashankaneti/Devops-backend
+
 devops-infra-live/     ← REPO 3: Reusable Terraform modules + Terragrunt configs + YAML resource definitions + GitHub Actions CI/CD
+  GitHub: adityashashankaneti/devops-infra-live
 ```
 
 ### Architecture Philosophy
@@ -129,6 +159,7 @@ devops-infra-live/     ← REPO 3: Reusable Terraform modules + Terragrunt confi
 {
   "project": "my-infra",
   "region": "us-east-1",
+  "model": "claude-sonnet-4-6",
   "resources": [
     {
       "id": "node_0",
@@ -159,209 +190,91 @@ devops-infra-live/     ← REPO 3: Reusable Terraform modules + Terragrunt confi
 }
 ```
 
-### Frontend Deploy Components (this repo)
-- `src/utils/deployPayload.ts` — `buildDeployPayload(nodes, edges, project, region)` walks ReactFlow node tree (using `parentNode` for nesting), builds the nested JSON above. Types: DeployResource, DeployConnection, DeployPayload
-- `src/components/DeployBar.tsx` — Fixed bottom bar with:
-  - Project name input + Region selector dropdown
-  - Resource/connection count display
-  - "Preview JSON" button → modal showing full payload with copy button
-  - "Deploy Infrastructure" button → POSTs to `VITE_DEPLOY_URL` (env var, defaults to `http://localhost:8000/api/deploy`)
-  - Success banner shows resource count, module types, branch name + "View PR" link
-  - **CI Status polling**: after successful deploy, polls `VITE_STATUS_URL` (GET /api/status) every 10s
-    - Shows spinner + "Terraform queued/running..." while pending/in_progress
-    - Shows green "Terraform plan succeeded" with check badges on success
-    - Shows red "Terraform failed" with links to logs on failure
-    - Stops polling on terminal states (success/failure/merged)
-  - Error banner with dismiss button
-- `src/components/ArchitectureCanvas.tsx` — Exposes `onStateChange(nodes, edges)` callback so App.tsx can pass current state to DeployBar
+---
 
-### REPO 2: Devops-backend (Python Lambda + SAM)
+## REPO 2: Devops-backend (Python Lambda + SAM)
+
 AWS Lambda behind API Gateway. Receives JSON, classifies resources via Claude, pushes YAML to infra-live.
 
 **Structure:**
 ```
 Devops-backend/
-├── template.json              ← SAM template: Lambda + HttpApi (3 routes: deploy, status, health)
-├── requirements.txt           ← anthropic, pygithub, boto3, pyyaml
-├── test/event.json            ← Sample test event
-└── src/
-    ├── handler.py             ← Lambda entry: 3 endpoints (POST /api/deploy, GET /api/status, GET /api/health)
-    ├── generate_terraform.py  ← Claude classifies resources into per-module-type YAML configs (NOT raw .tf)
-    ├── git_push.py            ← PyGithub: merge/append YAML into environments/dev/<type>/resources.yaml, create PR
-    └── secrets_helper.py      ← AWS Secrets Manager with env-var fallback
+├── template.json              ← SAM template: Lambda + named HttpApi (DevOpsHttpApi) with CORS
+├── requirements.txt           ← (root, not used by SAM — see src/requirements.txt)
+├── src/
+│   ├── requirements.txt       ← anthropic, pygithub, boto3, pyyaml  (SAM reads from here)
+│   ├── handler.py             ← Lambda entry: 4 endpoints
+│   ├── generate_terraform.py  ← Claude classifies resources into per-module-type YAML configs
+│   ├── git_push.py            ← PyGithub: merge/append YAML into environments/dev/<type>/resources.yaml, create PR
+│   └── secrets_helper.py      ← AWS Secrets Manager with env-var fallback
+└── .github/workflows/
+    └── deploy.yml             ← SAM build + deploy on push to main (any branch triggers validate)
 ```
 
-**Env vars:** `ANTHROPIC_API_KEY`, `GITHUB_TOKEN` (repo scope), `GITHUB_REPO` (e.g. `your-org/devops-infra-live`)
-
-**handler.py — 3 Endpoints:**
+**handler.py — 4 Endpoints:**
+- `POST /api/chat`   — Chatbot: sends messages to Claude with DevOps system prompt, returns `{ reply }`
 - `POST /api/deploy` — Full pipeline: Claude classify → build project.yaml → push YAML to GitHub → return PR URL
-- `GET /api/status?pr_url=<url>` — Poll CI/CD status of a PR (returns overall_status, checks, pr_state, pr_merged)
-- `GET /api/health` — Health check
+- `GET  /api/status` — Poll CI/CD status of a PR (query param: pr_url)
+- `GET  /api/health` — Health check
 
-**generate_terraform.py — Claude Resource Classification:**
-- `RESOURCE_TYPE_MAP` — Maps 50+ frontend resource IDs to 18 module types (or None if unsupported)
-- `SUPPORTED_MODULES` — Set of module types with pre-built Terraform modules
-- `SYSTEM_PROMPT` — Instructs Claude to CLASSIFY resources AND process connections:
-  - Input: nested canvas JSON with resource hierarchy + connections
-  - Output: `{ "module_type": { "resource-name": { snake_case_config } } }`
-  - Cross-references: subnet→vpc_name, ec2→subnet_name+security_groups, sg→vpc_name, etc.
-  - Property mapping: cidrBlock→cidr_block, instanceType→instance_type, etc.
-  - **Connection-based access policies** (see below)
-- `generate_resource_yamls(payload, api_key)` → `dict[str, dict]` — calls Claude, parses JSON response
-- `build_project_yaml(project, region)` → string — generates project.yaml content
-- `resources_to_yaml(resource_map)` → `dict[str, str]` — converts per-type dicts to YAML strings
+**generate_terraform.py:**
+- `generate_resource_yamls(payload, anthropic_api_key, model="claude-sonnet-4-6")` — accepts model param
+- Allowed models: `claude-sonnet-4-6`, `claude-opus-4-6`
+- Model is validated in handler.py (defaults to sonnet if invalid)
 
-**Connection-Based Access Policies (generated by Claude from canvas connections):**
-When a user draws a connection between two resources on the canvas, Claude generates
-three layers of access control:
+**Lambda env vars (set in template.json):**
+- `GITHUB_REPO = adityashashankaneti/devops-infra-live`
+- `ANTHROPIC_API_KEY_SECRET_ARN = arn:aws:secretsmanager:us-west-2:978184426471:secret:devops-ai/anthropic-api-key-DF5uC8`
+- `GITHUB_TOKEN_SECRET_ARN = arn:aws:secretsmanager:us-west-2:978184426471:secret:devops-ai/github-token-HZQPMo`
 
-1. **Security Group Rules (network-level)**
-   Added as `ingress_rules[]` on the TARGET's security group config.
-   Supports both CIDR-based (`cidr_blocks`) and SG-to-SG (`source_security_group`) references.
-   ```yaml
-   # Connection: EC2 → RDS (PostgreSQL) generates:
-   rds-sg:
-     vpc_name: my-vpc
-     ingress_rules:
-       - from_port: 5432
-         to_port: 5432
-         protocol: tcp
-         source_security_group: web-server-sg   # SG-to-SG reference
-         description: "Allow PostgreSQL from web servers"
-   ```
-   Port rules: MySQL=3306, PostgreSQL=5432, Redis=6379, Memcached=11211, HTTP=80, HTTPS=443
+**AWS Secrets Manager secrets:**
+- `devops-ai/anthropic-api-key` — `{"ANTHROPIC_API_KEY":"<key>"}` — Anthropic API key
+- `devops-ai/github-token`      — `{"GITHUB_TOKEN":"<token>"}` — GitHub PAT (repo scope) for pushing to devops-infra-live
 
-2. **IAM Policies (identity-based, least privilege)**
-   Added as `iam_policies[]` on Lambda/ECS configs. No wildcards — specific actions only.
-   ```yaml
-   # Connection: Lambda → DynamoDB generates:
-   my-function:
-     runtime: python3.12
-     iam_policies:
-       - sid: DynamoDBAccess
-         actions: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:Query, ...]
-         resources: ["arn:aws:dynamodb:*:*:table/my-table", "arn:aws:dynamodb:*:*:table/my-table/index/*"]
-   ```
-   Covers: DynamoDB, S3, SQS, SNS, EventBridge, RDS IAM auth
+**IMPORTANT: When updating secrets via AWS CLI always use `file://` syntax to avoid JSON quote stripping:**
+```bash
+# Write secret to file first, then:
+aws secretsmanager put-secret-value \
+  --secret-id "devops-ai/anthropic-api-key" \
+  --secret-string "file://secret.json"
+```
 
-3. **Resource-Based Policies (on the target)**
-   Added as `bucket_policy`, `queue_policy`, or `topic_policy` on the target resource.
-   ```yaml
-   # Connection: CloudFront → S3 generates bucket_policy on the S3 resource
-   # Connection: SNS → SQS generates queue_policy on the SQS resource
-   # Connection: EventBridge → SNS generates topic_policy on the SNS resource
-   ```
+**API Gateway:**
+- Named resource `DevOpsHttpApi` (AWS::Serverless::HttpApi) with CORS: AllowOrigins=*, AllowMethods=GET,POST,OPTIONS
+- Deployed URL: `https://swocff3ol9.execute-api.us-west-2.amazonaws.com`
+- Note: URL changed from `9alr2siz7c` to `swocff3ol9` when CORS was added (implicit → named HttpApi)
 
-**git_push.py — GitHub Operations:**
-- `push_to_infra_repo(...)` — Creates/resets feature branch, writes project.yaml, then for each module type:
-  - Reads existing `environments/dev/<type>/resources.yaml` from the branch
-  - Merges new resources into existing YAML (append new keys, overwrite existing)
-  - Writes merged YAML back (terragrunt.hcl already exists as a static file)
-  - Creates Pull Request with module type breakdown
-- `_merge_yaml_resources(existing_yaml, new_resources)` — YAML merge/append logic
-- `get_pr_status(github_token, repo_name, pr_url)` — Returns CI check status (overall_status, checks, pr_state, pr_merged)
+**GitHub Actions (deploy.yml):**
+- PRs to main: `sam validate --region $AWS_REGION` + `sam build`
+- Push to main: above + `sam deploy --resolve-s3 --capabilities CAPABILITY_IAM`
+- Uses GitHub OIDC → assumes `github-actions-devops-backend` IAM role (no static AWS keys)
+- GitHub secrets required: `AWS_ROLE_ARN`, `AWS_REGION`
 
-### REPO 3: devops-infra-live (Terraform Modules + Terragrunt + GitHub Actions)
+---
+
+## REPO 3: devops-infra-live (Terraform Modules + Terragrunt + GitHub Actions)
 
 **Structure:**
 ```
 devops-infra-live/
 ├── modules/                              ← 18 reusable Terraform modules
-│   ├── vpc/                              ← main.tf, variables.tf, outputs.tf
-│   ├── subnet/
-│   ├── ec2/
-│   ├── security-group/
-│   ├── s3/
-│   ├── rds/
-│   ├── lambda/
-│   ├── alb/
-│   ├── internet-gateway/
-│   ├── nat-gateway/
-│   ├── route-table/
-│   ├── eventbridge/
-│   ├── sqs/
-│   ├── sns/
-│   ├── dynamodb/
-│   ├── route53/
-│   ├── ecs/
-│   ├── cloudfront/
-│   └── elasticache/
+│   ├── vpc/ subnet/ ec2/ security-group/ s3/ rds/ lambda/ alb/
+│   ├── internet-gateway/ nat-gateway/ route-table/
+│   ├── eventbridge/ sqs/ sns/ dynamodb/ route53/ ecs/ cloudfront/ elasticache/
 ├── environments/
-│   ├── terragrunt.hcl                    ← Root config: S3 remote state + AWS provider generation
-│   └── dev/                              ← Dev environment
+│   ├── terragrunt.hcl                    ← Root: S3 remote state + AWS provider generation
+│   └── dev/
 │       ├── project.yaml                  ← { project: "my-infra", region: "us-east-1" }
-│       ├── vpc/
-│       │   ├── terragrunt.hcl            ← Points at modules//vpc, reads resources.yaml
-│       │   └── resources.yaml            ← { my-vpc: { cidr_block: "10.0.0.0/16" } }
-│       ├── subnet/
-│       │   ├── terragrunt.hcl            ← Depends on vpc
-│       │   └── resources.yaml
-│       ├── security-group/
-│       │   ├── terragrunt.hcl            ← Depends on vpc
-│       │   └── resources.yaml
-│       ├── ec2/
-│       │   ├── terragrunt.hcl            ← Depends on subnet + security-group
-│       │   └── resources.yaml
-│       ├── s3/
-│       ├── rds/                          ← Depends on subnet + security-group
-│       ├── lambda/                       ← Depends on subnet + security-group
-│       ├── alb/                          ← Depends on vpc + subnet + security-group
-│       ├── internet-gateway/            ← Depends on vpc
-│       ├── nat-gateway/                 ← Depends on subnet
-│       ├── route-table/                 ← Depends on vpc + subnet + internet-gateway + nat-gateway
-│       ├── eventbridge/
-│       ├── sqs/
-│       ├── sns/
-│       ├── dynamodb/
-│       ├── route53/                     ← Depends on vpc
-│       ├── ecs/
-│       ├── cloudfront/
-│       └── elasticache/                 ← Depends on subnet + security-group
+│       └── <type>/
+│           ├── terragrunt.hcl            ← Static, points at module, declares dependencies
+│           └── resources.yaml            ← Written/merged by Lambda
 ├── .github/workflows/
-│   └── terraform.yml                    ← CI/CD pipeline with matrix per project
+│   └── terraform.yml                     ← detect → plan (PR) → apply (merge to main)
 └── README.md
 ```
 
 **Terraform Modules Pattern:**
-Each module under `modules/<type>/` uses `for_each = var.resources` to accept a map of resource configs:
-```hcl
-# modules/ec2/main.tf
-resource "aws_instance" "this" {
-  for_each      = var.resources
-  ami           = each.value.ami
-  instance_type = each.value.instance_type
-  subnet_id     = try(var.subnet_ids[each.value.subnet_name], null)
-  ...
-}
-```
-Modules that depend on others accept output maps (e.g. `var.subnet_ids`, `var.security_group_ids`).
-
-**Access Policy Support in Modules:**
-- `modules/security-group/` — Supports both CIDR-based and SG-to-SG ingress rules via standalone
-  `aws_security_group_rule` resources. Ingress rules with `source_security_group` reference other SGs
-  by name within the same module (self-referencing `for_each`).
-- `modules/lambda/` — Supports `iam_policies[]` array on each function config. Each policy becomes an
-  `aws_iam_role_policy` inline policy on the Lambda's IAM role. Also auto-attaches
-  `AWSLambdaVPCAccessExecutionRole` when subnet_names is present. Outputs `role_arns` map.
-- `modules/s3/` — Supports optional `bucket_policy.statements[]` → creates `aws_s3_bucket_policy`.
-- `modules/sqs/` — Supports optional `queue_policy.statements[]` → creates `aws_sqs_queue_policy`.
-- `modules/sns/` — Supports optional `topic_policy.statements[]` → creates `aws_sns_topic_policy`.
-
-**Terragrunt Config Pattern:**
-Root `environments/terragrunt.hcl`:
-- S3 remote state with `${local.project}-tf-state` bucket
-- DynamoDB lock table `${local.project}-tf-lock`
-- Generates `provider.tf` and `backend.tf`
-- Reads `project.yaml` via `find_in_parent_folders()`
-
-Per-module `environments/dev/<type>/terragrunt.hcl`:
-```hcl
-include "root" { path = find_in_parent_folders() }
-terraform { source = "${get_repo_root()}/modules//<type>" }
-locals { config = yamldecode(file("resources.yaml")) }
-dependency "vpc" { config_path = "../vpc" ... }  # if needed
-inputs = { resources = local.config, ... }
-```
+Each module uses `for_each = var.resources` to accept a map of resource configs.
 
 **Dependency Wiring:**
 - subnet → vpc
@@ -377,75 +290,84 @@ inputs = { resources = local.config, ... }
 - elasticache → subnet + security-group
 - s3, sqs, sns, eventbridge, dynamodb, cloudfront, ecs → no dependencies
 
-**Route Table Module:**
-Claude auto-generates route tables whenever subnets exist:
-- Public subnets → route table with `0.0.0.0/0 → IGW` + subnet associations
-- Private subnets → route table with `0.0.0.0/0 → NAT GW` + subnet associations
-- Auto-creates IGW/NAT GW if needed but not on the canvas
-```yaml
-# Example resources.yaml for route-table:
-public-rt:
-  vpc_name: my-vpc
-  routes:
-    - cidr_block: "0.0.0.0/0"
-      gateway_type: igw
-      gateway_name: my-igw
-  subnet_associations: [public-subnet-1]
-private-rt:
-  vpc_name: my-vpc
-  routes:
-    - cidr_block: "0.0.0.0/0"
-      gateway_type: nat
-      gateway_name: my-nat-gw
-  subnet_associations: [private-subnet-1]
-```
-
 **GitHub Actions workflow (terraform.yml):**
-- Triggers on: push to main (paths: environments/**) and PRs to main
+- Triggers: push to main (paths: environments/**) and PRs to main
 - 3 jobs: `detect` → `plan` (on PR) → `apply` (on merge)
-- `detect` job: finds changed project dirs under `environments/` using `git diff`
-- `plan` job: matrix strategy per project, runs `terragrunt run-all plan`, posts plan as PR comment
-- `apply` job: matrix strategy per project, runs `terragrunt run-all apply -auto-approve`
+- Uses GitHub OIDC → `role-to-assume: ${{ secrets.AWS_ROLE_ARN }}`
+- GitHub secrets: `AWS_ROLE_ARN`, `AWS_REGION`
 - Terraform v1.7.5, Terragrunt v0.55.1
-
-**GitHub Secrets needed:** `AWS_ROLE_ARN`, `AWS_REGION`
-**State backend:** S3 bucket + DynamoDB lock table (configured in root terragrunt.hcl)
 
 ---
 
-## Current Deployment Decisions
+## AWS Infrastructure
 
-### Devops-backend secret management
-- `Devops-backend/template.json` is configured to read Anthropic from AWS Secrets Manager via:
-  - `ANTHROPIC_API_KEY_SECRET_ARN = arn:aws:secretsmanager:us-west-2:978184426471:secret:devops-ai/anthropic-api-key-DF5uC8`
-- The secret name is `devops-ai/anthropic-api-key`
-- The Secrets Manager value should be valid JSON in this format:
-  - `{"ANTHROPIC_API_KEY":"REPLACE_ME"}`
-- `src/secrets_helper.py` reads Secrets Manager first and falls back to env vars for local dev
-- `GITHUB_TOKEN_SECRET_ARN` still needs to be filled with a GitHub token secret ARN if GitHub PAT access is moved to Secrets Manager
+**Account:** `978184426471`
+**Region:** `us-west-2`
 
-### Devops-backend GitHub Actions
-- `Devops-backend/.github/workflows/deploy.yml` was added
-- Workflow behavior:
-  - PRs to `main`: run `sam validate` and `sam build`
-  - Pushes to `main`: deploy the SAM stack automatically
-- Backend GitHub Actions uses GitHub OIDC and AWS role assumption, not static AWS keys
-- Required GitHub configuration for `Devops-backend`:
-  - Secret: `AWS_ROLE_ARN`
-  - Secret: `AWS_REGION`
-  - Variable: `SAM_STACK_NAME` (defaults to `devops-backend`)
+**IAM:**
+- User `gha_user` (arn:aws:iam::978184426471:user/gha_user) — used for local AWS CLI ops
+- Role `github-actions-devops-backend` — assumed by GitHub Actions via OIDC for Devops-backend SAM deploys
+  - Trust: `repo:adityashashankaneti/Devops-backend:*` (all branches)
+  - Policies: CloudFormationFullAccess, LambdaFullAccess, IAMFullAccess, S3FullAccess, APIGatewayAdministrator
+- Role `github-actions-devops-infra-live` — assumed by GitHub Actions via OIDC for Terragrunt plan/apply
+  - Trust: `repo:adityashashankaneti/devops-infra-live:*` (all branches)
+  - Policies: AdministratorAccess (needs to create any AWS resource Terraform provisions)
+- GitHub OIDC provider created: `token.actions.githubusercontent.com`
 
-### devops-infra-live GitHub Actions auth
-- `devops-infra-live/.github/workflows/terraform.yml` was updated to use GitHub OIDC with:
-  - `permissions.id-token: write`
-  - `role-to-assume: ${{ secrets.AWS_ROLE_ARN }}`
-- `devops-infra-live` no longer expects `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in GitHub Actions
-- Required GitHub secrets for `devops-infra-live` are now:
-  - `AWS_ROLE_ARN`
-  - `AWS_REGION`
+**Lambda:**
+- Function: `devops-backend-GenerateAndPushFunction-exwr1IobUDIE`
+- Stack: `devops-backend` (SAM/CloudFormation)
+- Log group: `/aws/lambda/devops-backend-GenerateAndPushFunction-exwr1IobUDIE`
 
-### AWS auth notes
-- Verified working IAM user credentials for `arn:aws:iam::978184426471:user/gha_user`
-- This is an IAM user, not an assumed role session
-- If future work needs assumed-role credentials, the returned STS ARN should look like:
-  - `arn:aws:sts::ACCOUNT_ID:assumed-role/ROLE_NAME/SESSION_NAME`
+**GitHub Secrets set on adityashashankaneti/Devops-backend:**
+- `AWS_ROLE_ARN = arn:aws:iam::978184426471:role/github-actions-devops-backend`
+- `AWS_REGION = us-west-2`
+
+**GitHub Secrets set on adityashashankaneti/devops-infra-live:**
+- `AWS_ROLE_ARN = arn:aws:iam::978184426471:role/github-actions-devops-infra-live`
+- `AWS_REGION = us-west-2`
+
+---
+
+## Known Issues / Fixes Applied This Session
+
+1. **`requirements.txt` must be in `src/`** — SAM reads from `CodeUri: src/`, not project root.
+   Root `requirements.txt` still exists but SAM uses `src/requirements.txt`.
+
+2. **CORS was missing** — API Gateway was implicit `ServerlessHttpApi`. Fixed by adding explicit
+   `DevOpsHttpApi` resource with `CorsConfiguration`. URL changed as a result — update `.env.local`.
+
+3. **AWS CLI JSON quoting on Windows** — PowerShell and bash both mangle JSON quotes when passing
+   `--secret-string` inline. Always write to a file and use `file://C:/path/to/file.json`.
+
+4. **`sam validate` needs `--region`** — The validate job runs before AWS credentials are configured,
+   so it must receive `--region ${{ env.AWS_REGION }}` explicitly.
+
+5. **Lambda caches Secrets Manager values** — After updating a secret, force a cold start by running:
+   `aws lambda update-function-configuration --function-name <name> --description "bump"`
+
+6. **Terragrunt Apply skipped on PRs (by design)** — `terraform.yml` apply job has condition:
+   `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`
+   Apply only runs when PR is merged to main. Plan runs on PRs. This is intentional.
+
+7. **All `resources.yaml` placeholders were comment-only** — `terragrunt run-all apply` processes
+   ALL subdirs under `environments/dev/`, not just changed modules. Any module with a comment-only
+   `resources.yaml` caused `yamldecode` to fail ("missing start of document"). Fixed: all 19 placeholder
+   `resources.yaml` files now contain `{}` (valid empty YAML). This includes: alb, cloudfront, dynamodb,
+   ec2, ecs, elasticache, eventbridge, internet-gateway, lambda, nat-gateway, rds, route-table, route53,
+   s3, security-group, sns, sqs, subnet, vpc.
+
+8. **Frontend showed `✗` for skipped CI jobs** — `DeployBar.tsx` only checked `conclusion === 'success'`
+   vs everything-else. GitHub returns `conclusion: 'skipped'` for jobs whose `if:` condition was false.
+   Fixed: skipped now shows `⊘ skipped` with muted gray styling in both the in-progress row and the
+   success row.
+
+9. **Apply failures were invisible in frontend after PR merge** — `get_pr_status()` in `git_push.py`
+   read check runs only from `pr.head.sha`. But apply runs on the merge commit (push to main), which is
+   a different SHA. Fixed: when `pr.merged` is true, also fetch check runs from `pr.merge_commit_sha`
+   and include them in `all_checks`.
+
+10. **`overall_status` stayed `"pending"` when Apply was skipped on PR** — Old logic:
+    `all(c == "success")` — fails because `"skipped" != "success"`. Fixed: skipped/neutral conclusions
+    are now treated as non-failures. overall becomes `"success"` when all conclusions are in
+    `("success", "skipped", "neutral")` and at least one actionable (non-skipped) conclusion exists.

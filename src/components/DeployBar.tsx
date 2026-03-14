@@ -199,7 +199,7 @@ export default function DeployBar({ nodes, edges }: Props) {
                     </span>
                     {ciStatus?.checks?.map((c, i) => (
                       <span key={i} className="px-2 py-0.5 rounded bg-slate-800/60 border border-slate-700/40 text-slate-400">
-                        {c.name}: {c.status === 'in_progress' ? '⏳ running' : c.status === 'completed' ? (c.conclusion === 'success' ? '✓' : '✗') : '⏸ queued'}
+                        {c.name}: {c.status === 'in_progress' ? '⏳ running' : c.status === 'completed' ? (c.conclusion === 'success' ? '✓' : c.conclusion === 'skipped' ? '⊘ skipped' : '✗') : '⏸ queued'}
                       </span>
                     ))}
                   </>
@@ -208,8 +208,8 @@ export default function DeployBar({ nodes, edges }: Props) {
                     <CheckCircle size={12} className="text-emerald-400" />
                     <span className="text-emerald-300">Terraform plan succeeded</span>
                     {ciStatus.checks?.map((c, i) => (
-                      <span key={i} className="px-2 py-0.5 rounded bg-emerald-900/40 border border-emerald-700/30 text-emerald-400">
-                        {c.name}: ✓
+                      <span key={i} className={`px-2 py-0.5 rounded border ${c.conclusion === 'skipped' ? 'bg-slate-800/60 border-slate-700/40 text-slate-500' : 'bg-emerald-900/40 border-emerald-700/30 text-emerald-400'}`}>
+                        {c.name}: {c.conclusion === 'skipped' ? '⊘ skipped' : '✓'}
                       </span>
                     ))}
                   </>
