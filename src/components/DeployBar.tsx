@@ -1,10 +1,12 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { Node, Edge } from 'reactflow';
-import { Rocket, Eye, X, CheckCircle, XCircle, Loader2, Copy, Check, ChevronDown, ExternalLink, RefreshCw } from 'lucide-react';
+import { Rocket, Eye, X, CheckCircle, XCircle, Loader2, Copy, Check, ChevronDown, ExternalLink, RefreshCw, Download } from 'lucide-react';
 import { buildDeployPayload, DeployPayload } from '../utils/deployPayload';
+import { loadCanvasFromImport } from './ArchitectureCanvas';
 
-const DEPLOY_URL = import.meta.env.VITE_DEPLOY_URL ?? 'http://localhost:8000/api/deploy';
-const STATUS_URL = import.meta.env.VITE_STATUS_URL ?? 'http://localhost:8000/api/status';
+const DEPLOY_URL  = import.meta.env.VITE_DEPLOY_URL  ?? 'http://localhost:8000/api/deploy';
+const STATUS_URL  = import.meta.env.VITE_STATUS_URL  ?? 'http://localhost:8000/api/status';
+const IMPORT_URL  = import.meta.env.VITE_IMPORT_URL  ?? 'http://localhost:8000/api/import';
 
 const REGIONS = [
   'us-east-1', 'us-east-2', 'us-west-1', 'us-west-2',
@@ -61,6 +63,8 @@ export default function DeployBar({ nodes, edges }: Props) {
   const [ciStatus, setCiStatus] = useState<CIStatus | null>(null);
   const [pollingActive, setPollingActive] = useState(false);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [importStatus, setImportStatus] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [importError, setImportError] = useState('');
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -135,6 +139,34 @@ export default function DeployBar({ nodes, edges }: Props) {
       setErrorMsg(err instanceof Error ? err.message : 'Deployment failed');
     }
   }, [nodes, deployStatus, getPayload]);
+
+  const handleImport = useCallback(async () => {
+    if (importStatus === 'loading') return;
+    if (!PROJECT_NAME_RE.test(projectName)) {
+      setProjectNameError('Use lowercase letters, numbers, and hyphens only (e.g. my-infra)');
+      return;
+    }
+    if (nodes.length > 0) {
+      const ok = window.confirm(
+        'This will replace your current canvas with resources from the Terraform state file. Continue?'
+      );
+      if (!ok) return;
+    }
+    setImportStatus('loading');
+    setImportError('');
+    try {
+      const url = `${IMPORT_URL}?project=${encodeURIComponent(projectName)}&region=${encodeURIComponent(region)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      loadCanvasFromImport(data.nodes, data.edges);
+      setImportStatus('idle');
+    } catch (err) {
+      setImportStatus('error');
+      setImportError(err instanceof Error ? err.message : 'Import failed');
+      setTimeout(() => setImportStatus('idle'), 5000);
+    }
+  }, [importStatus, projectName, region, nodes.length]);
 
   const handleCopy = useCallback(() => {
     const json = JSON.stringify(getPayload(), null, 2);
@@ -318,6 +350,23 @@ export default function DeployBar({ nodes, edges }: Props) {
 
           {/* Spacer */}
           <div className="flex-1" />
+
+          {/* Import from state */}
+          <button
+            onClick={handleImport}
+            disabled={importStatus === 'loading'}
+            title={importError || 'Load resources from your Terraform state file in S3'}
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200
+              ${importStatus === 'loading'
+                ? 'bg-slate-800/40 border-slate-700/30 text-slate-500 cursor-not-allowed'
+                : importStatus === 'error'
+                ? 'bg-red-900/40 border-red-700/50 text-red-400 hover:bg-red-900/60'
+                : 'bg-slate-800/60 border-slate-700/50 text-slate-400 hover:text-slate-200 hover:border-slate-600 hover:bg-slate-700/50'
+              }`}
+          >
+            {importStatus === 'loading' ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+            {importStatus === 'loading' ? 'Importing…' : importStatus === 'error' ? 'Import failed' : 'Import State'}
+          </button>
 
           {/* Preview JSON */}
           <button

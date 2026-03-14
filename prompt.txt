@@ -371,3 +371,10 @@ Each module uses `for_each = var.resources` to accept a map of resource configs.
     `all(c == "success")` — fails because `"skipped" != "success"`. Fixed: skipped/neutral conclusions
     are now treated as non-failures. overall becomes `"success"` when all conclusions are in
     `("success", "skipped", "neutral")` and at least one actionable (non-skipped) conclusion exists.
+
+11. **Root `terragrunt.hcl` couldn't find `project.yaml`** — `environments/terragrunt.hcl` line 49 used
+    `file("project.yaml")` which resolves relative to `environments/` (where the root HCL lives).
+    But `project.yaml` is written by Lambda to `environments/dev/project.yaml`. Fixed by changing to
+    `file(find_in_parent_folders("project.yaml"))` — `find_in_parent_folders` resolves from the child
+    module's directory context (e.g. `environments/dev/alb/`) and correctly traverses up to find
+    `environments/dev/project.yaml`.

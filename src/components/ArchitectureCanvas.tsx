@@ -392,6 +392,19 @@ export default function ArchitectureCanvas({ connectorType, onNodeSelect, onStat
     return () => window.removeEventListener('update-node-config' as never, handler as EventListener);
   }, [updateNodeConfig]);
 
+  // Load imported canvas state (replaces current nodes/edges)
+  useEffect(() => {
+    const handler = (e: CustomEvent) => {
+      const { nodes: newNodes, edges: newEdges } = e.detail;
+      pushHistory();
+      syncNodeIdCounter(newNodes);
+      setNodes(newNodes);
+      setEdges(newEdges);
+    };
+    window.addEventListener('load-canvas' as never, handler as EventListener);
+    return () => window.removeEventListener('load-canvas' as never, handler as EventListener);
+  }, [setNodes, setEdges, pushHistory]);
+
   // Click-to-place: add resource at canvas center
   useEffect(() => {
     const handler = (e: CustomEvent) => {
@@ -490,4 +503,8 @@ export function updateCanvasNodeConfig(id: string, config: Record<string, unknow
 
 export function placeResourceOnCanvas(resource: AWSResource) {
   window.dispatchEvent(new CustomEvent('place-resource', { detail: { resource } }));
+}
+
+export function loadCanvasFromImport(nodes: Node[], edges: Edge[]) {
+  window.dispatchEvent(new CustomEvent('load-canvas', { detail: { nodes, edges } }));
 }
