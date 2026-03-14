@@ -78,6 +78,7 @@ interface Props {
   connectorType: ConnectorType;
   onNodeSelect: (node: Node<AWSResource> | null) => void;
   onStateChange?: (nodes: Node[], edges: Edge[]) => void;
+  deployedNodeIds?: ReadonlySet<string>;
 }
 
 export default function ArchitectureCanvas({ connectorType, onNodeSelect, onStateChange }: Props) {

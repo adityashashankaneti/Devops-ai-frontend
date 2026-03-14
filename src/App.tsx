@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useMemo } from 'react';
 import { Node, Edge } from 'reactflow';
 import TopNav from './components/TopNav';
 import LeftSidebar from './components/LeftSidebar';
@@ -6,7 +6,31 @@ import ArchitectureCanvas, { updateCanvasNodeConfig, placeResourceOnCanvas } fro
 import ChatbotView from './components/ChatbotView';
 import PropertiesPanel from './components/PropertiesPanel';
 import DeployBar from './components/DeployBar';
-import { AppMode, AWSResource, ConnectorType } from './types';
+import { AppMode, AWSResource, ConnectorType, DeployedNodeInfo } from './types';
+import { DeployedNodesContext } from './contexts/DeployedNodesContext';
+
+const DEPLOYED_NODES_KEY = 'devops-deployed-nodes';
+
+function loadDeployedNodes(): Record<string, DeployedNodeInfo> {
+  try {
+    const raw = localStorage.getItem(DEPLOYED_NODES_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function saveDeployedNodes(nodes: Record<string, DeployedNodeInfo>) {
+  try {
+    localStorage.setItem(DEPLOYED_NODES_KEY, JSON.stringify(nodes));
+  } catch { /* storage full */ }
+}
+
+/** Pending deploy batch: node IDs + their metadata, waiting for apply to confirm. */
+interface PendingBatch {
+  project: string;
+  region: string;
+  nodeIds: string[];
+  nodeInfoMap: Record<string, { resourceType: string; resourceName: string }>;
+}
 
 export default function App() {
   const [mode, setMode] = useState<AppMode>('architecture');
@@ -15,6 +39,63 @@ export default function App() {
   const [canvasNodes, setCanvasNodes] = useState<Node[]>([]);
   const [canvasEdges, setCanvasEdges] = useState<Edge[]>([]);
 
+  // ── Deployed state ───────────────────────────────────────────────────────
+  const [deployedNodes, setDeployedNodes] = useState<Record<string, DeployedNodeInfo>>(loadDeployedNodes);
+  const [pendingBatch, setPendingBatch] = useState<PendingBatch | null>(null);
+
+  const deployedNodeIds = useMemo(() => new Set(Object.keys(deployedNodes)), [deployedNodes]);
+
+  // ── Callbacks for DeployBar ───────────────────────────────────────────────
+  /** Called when the deploy button is clicked — captures which nodes are being deployed. */
+  const handleDeployStarted = useCallback((project: string, region: string) => {
+    const nodeInfoMap: Record<string, { resourceType: string; resourceName: string }> = {};
+    for (const node of canvasNodes) {
+      nodeInfoMap[node.id] = {
+        resourceType: (node.data as AWSResource).id,
+        resourceName: ((node.data as AWSResource & { config?: Record<string, unknown> }).config?.name as string)
+          || (node.data as AWSResource).name,
+      };
+    }
+    setPendingBatch({
+      project,
+      region,
+      nodeIds: canvasNodes.map((n) => n.id),
+      nodeInfoMap,
+    });
+  }, [canvasNodes]);
+
+  /** Called when CI apply succeeds — promotes pending batch to deployed. */
+  const handleApplySucceeded = useCallback(() => {
+    if (!pendingBatch) return;
+    setDeployedNodes((prev) => {
+      const next = { ...prev };
+      for (const nodeId of pendingBatch.nodeIds) {
+        const info = pendingBatch.nodeInfoMap[nodeId];
+        if (info) {
+          next[nodeId] = { project: pendingBatch.project, region: pendingBatch.region, ...info };
+        }
+      }
+      saveDeployedNodes(next);
+      return next;
+    });
+    setPendingBatch(null);
+  }, [pendingBatch]);
+
+  // ── Callback for PropertiesPanel ──────────────────────────────────────────
+  /** Called when a destroy apply succeeds — removes node from deployed state + canvas. */
+  const handleNodeDestroyed = useCallback((nodeId: string) => {
+    setDeployedNodes((prev) => {
+      const next = { ...prev };
+      delete next[nodeId];
+      saveDeployedNodes(next);
+      return next;
+    });
+    // Remove node from canvas via custom event (ArchitectureCanvas listens)
+    window.dispatchEvent(new CustomEvent('delete-canvas-node', { detail: { nodeId } }));
+    setSelectedNode(null);
+  }, []);
+
+  // ── Standard canvas callbacks ─────────────────────────────────────────────
   const handleResourceDragStart = useCallback((e: React.DragEvent, resource: AWSResource) => {
     e.dataTransfer.setData('application/reactflow', JSON.stringify(resource));
     e.dataTransfer.effectAllowed = 'move';
@@ -40,40 +121,49 @@ export default function App() {
   }, []);
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-slate-950 overflow-hidden">
-      <TopNav mode={mode} onModeChange={setMode} />
-      <div className="flex flex-1 overflow-hidden relative">
-        <LeftSidebar
-          onResourceDragStart={handleResourceDragStart}
-          onResourceClick={placeResourceOnCanvas}
-          connectorType={connectorType}
-          onConnectorChange={setConnectorType}
-        />
-        <main className="flex-1 overflow-hidden relative">
-          {mode === 'architecture' ? (
-            <ArchitectureCanvas
-              connectorType={connectorType}
-              onNodeSelect={handleNodeSelect}
-              onStateChange={handleCanvasStateChange}
-            />
-          ) : (
-            <ChatbotView />
-          )}
-
-          {/* Deploy bar at the bottom of the canvas */}
-          {mode === 'architecture' && (
-            <DeployBar nodes={canvasNodes} edges={canvasEdges} />
-          )}
-        </main>
-
-        {mode === 'architecture' && selectedNode && (
-          <PropertiesPanel
-            node={selectedNode}
-            onClose={() => setSelectedNode(null)}
-            onUpdate={handleNodeUpdate}
+    <DeployedNodesContext.Provider value={deployedNodeIds}>
+      <div className="h-screen w-screen flex flex-col bg-slate-950 overflow-hidden">
+        <TopNav mode={mode} onModeChange={setMode} />
+        <div className="flex flex-1 overflow-hidden relative">
+          <LeftSidebar
+            onResourceDragStart={handleResourceDragStart}
+            onResourceClick={placeResourceOnCanvas}
+            connectorType={connectorType}
+            onConnectorChange={setConnectorType}
           />
-        )}
+          <main className="flex-1 overflow-hidden relative">
+            {mode === 'architecture' ? (
+              <ArchitectureCanvas
+                connectorType={connectorType}
+                onNodeSelect={handleNodeSelect}
+                onStateChange={handleCanvasStateChange}
+                deployedNodeIds={deployedNodeIds}
+              />
+            ) : (
+              <ChatbotView />
+            )}
+
+            {mode === 'architecture' && (
+              <DeployBar
+                nodes={canvasNodes}
+                edges={canvasEdges}
+                onDeployStarted={handleDeployStarted}
+                onApplySucceeded={handleApplySucceeded}
+              />
+            )}
+          </main>
+
+          {mode === 'architecture' && selectedNode && (
+            <PropertiesPanel
+              node={selectedNode}
+              onClose={() => setSelectedNode(null)}
+              onUpdate={handleNodeUpdate}
+              deployedNodeInfo={deployedNodes[selectedNode.id]}
+              onNodeDestroyed={handleNodeDestroyed}
+            />
+          )}
+        </div>
       </div>
-    </div>
+    </DeployedNodesContext.Provider>
   );
 }

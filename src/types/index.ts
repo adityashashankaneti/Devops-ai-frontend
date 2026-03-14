@@ -25,3 +25,11 @@ export interface ChatMessage {
   content: string;
   timestamp: Date;
 }
+
+/** Metadata stored for each node that has been successfully deployed to AWS. */
+export interface DeployedNodeInfo {
+  project: string;
+  region: string;
+  resourceType: string;  // data.id  e.g. "vpc", "ec2"
+  resourceName: string;  // YAML key  e.g. "spoke-vpc"
+}
