@@ -81,6 +81,25 @@ export default function App() {
     setPendingBatch(null);
   }, [pendingBatch]);
 
+  // ── Callback for Import State ──────────────────────────────────────────────
+  /** Called after Import State succeeds — marks all imported nodes as deployed (they're live in AWS). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleImportSucceeded = useCallback((importedNodes: any[], project: string, region: string) => {
+    setDeployedNodes((prev) => {
+      const next = { ...prev };
+      for (const node of importedNodes) {
+        next[node.id] = {
+          project,
+          region,
+          resourceType: node.data?.id ?? '',
+          resourceName: (node.data?.config?.name as string) || node.data?.name || '',
+        };
+      }
+      saveDeployedNodes(next);
+      return next;
+    });
+  }, []);
+
   // ── Callback for PropertiesPanel ──────────────────────────────────────────
   /** Called when a destroy apply succeeds — removes node from deployed state + canvas. */
   const handleNodeDestroyed = useCallback((nodeId: string) => {
@@ -149,6 +168,7 @@ export default function App() {
                 edges={canvasEdges}
                 onDeployStarted={handleDeployStarted}
                 onApplySucceeded={handleApplySucceeded}
+                onImportSucceeded={handleImportSucceeded}
               />
             )}
           </main>

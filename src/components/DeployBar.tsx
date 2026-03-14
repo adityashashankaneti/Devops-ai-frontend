@@ -50,9 +50,11 @@ interface Props {
   edges: Edge[];
   onDeployStarted?: (project: string, region: string) => void;
   onApplySucceeded?: () => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onImportSucceeded?: (importedNodes: any[], project: string, region: string) => void;
 }
 
-export default function DeployBar({ nodes, edges, onDeployStarted, onApplySucceeded }: Props) {
+export default function DeployBar({ nodes, edges, onDeployStarted, onApplySucceeded, onImportSucceeded }: Props) {
   const [region, setRegion] = useState('us-east-1');
   const [model, setModel] = useState<ModelId>('claude-sonnet-4-6');
   const [projectName, setProjectName] = useState('my-infra');
@@ -167,13 +169,14 @@ export default function DeployBar({ nodes, edges, onDeployStarted, onApplySuccee
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       loadCanvasFromImport(data.nodes, data.edges);
+      onImportSucceeded?.(data.nodes, projectName, region);
       setImportStatus('idle');
     } catch (err) {
       setImportStatus('error');
       setImportError(err instanceof Error ? err.message : 'Import failed');
       setTimeout(() => setImportStatus('idle'), 5000);
     }
-  }, [importStatus, projectName, region, nodes.length]);
+  }, [importStatus, projectName, region, nodes.length, onImportSucceeded]);
 
   const handleCopy = useCallback(() => {
     const json = JSON.stringify(getPayload(), null, 2);
