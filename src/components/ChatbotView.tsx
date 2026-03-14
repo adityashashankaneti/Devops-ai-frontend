@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Bot, User, Sparkles, AlertCircle } from 'lucide-react';
+import { Send, Bot, User, Sparkles, AlertCircle, RotateCcw } from 'lucide-react';
 import { ChatMessage } from '../types';
 
 const CHAT_URL = import.meta.env.VITE_CHAT_URL ?? 'http://localhost:8000/api/chat';
@@ -18,6 +18,7 @@ export default function ChatbotView() {
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [error, setError] = useState('');
+  const [lastFailedMessages, setLastFailedMessages] = useState<{ role: string; content: string }[] | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -41,6 +42,7 @@ export default function ChatbotView() {
       setMessages(updatedMessages);
       setInput('');
       setError('');
+      setLastFailedMessages(null);
       setIsTyping(true);
 
       if (textareaRef.current) {
@@ -72,12 +74,43 @@ export default function ChatbotView() {
         setMessages((prev) => [...prev, aiMsg]);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to reach backend');
+        setLastFailedMessages(updatedMessages.map(({ role, content }) => ({ role, content })));
       } finally {
         setIsTyping(false);
       }
     },
     [isTyping, messages],
   );
+
+  const retry = useCallback(async () => {
+    if (!lastFailedMessages) return;
+    setError('');
+    setIsTyping(true);
+    try {
+      const res = await fetch(CHAT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: lastFailedMessages }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const aiMsg: ChatMessage = {
+        id: `${Date.now()}-a`,
+        role: 'assistant',
+        content: data.reply,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, aiMsg]);
+      setLastFailedMessages(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reach backend');
+    } finally {
+      setIsTyping(false);
+    }
+  }, [lastFailedMessages]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -215,8 +248,17 @@ export default function ChatbotView() {
           </div>
           {error && (
             <div className="flex items-center gap-2 mt-2 text-[10px] text-red-400">
-              <AlertCircle size={11} />
-              {error}
+              <AlertCircle size={11} className="flex-shrink-0" />
+              <span className="flex-1 truncate">{error}</span>
+              {lastFailedMessages && (
+                <button
+                  onClick={retry}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-800 border border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-all flex-shrink-0"
+                >
+                  <RotateCcw size={10} />
+                  Retry
+                </button>
+              )}
             </div>
           )}
         </div>
