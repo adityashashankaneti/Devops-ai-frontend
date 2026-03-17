@@ -16,8 +16,7 @@ const REGIONS = [
 ];
 
 const MODELS = [
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', description: 'Fast & cost-efficient' },
-  { id: 'claude-opus-4-6',   label: 'Opus 4.6',   description: 'Most capable' },
+  { id: 'claude-opus-4-6', label: 'Opus 4.6', description: 'Most capable' },
 ] as const;
 
 type ModelId = typeof MODELS[number]['id'];
