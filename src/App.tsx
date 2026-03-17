@@ -182,6 +182,7 @@ export default function App() {
               onUpdate={handleNodeUpdate}
               deployedNodeInfo={deployedNodes[selectedNode.id]}
               onNodeDestroyed={handleNodeDestroyed}
+              allDeployedNodes={deployedNodes}
             />
           )}
         </div>

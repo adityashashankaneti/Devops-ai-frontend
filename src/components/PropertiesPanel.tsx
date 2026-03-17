@@ -13,6 +13,7 @@ interface Props {
   onUpdate: (nodeId: string, config: Record<string, string | boolean | number>) => void;
   deployedNodeInfo?: DeployedNodeInfo;
   onNodeDestroyed?: (nodeId: string) => void;
+  allDeployedNodes?: Record<string, DeployedNodeInfo>;
 }
 
 function ToggleField({
@@ -59,9 +60,9 @@ function InputField({
   );
 }
 
-type DestroyPhase = 'idle' | 'confirm' | 'destroying' | 'polling' | 'success' | 'error';
+type DestroyPhase = 'idle' | 'confirm' | 'destroying' | 'polling' | 'success' | 'dependency_error' | 'error';
 
-export default function PropertiesPanel({ node, onClose, onUpdate, deployedNodeInfo, onNodeDestroyed }: Props) {
+export default function PropertiesPanel({ node, onClose, onUpdate, deployedNodeInfo, onNodeDestroyed, allDeployedNodes }: Props) {
   if (!node) return null;
 
   const resource = node.data;
@@ -119,17 +120,37 @@ export default function PropertiesPanel({ node, onClose, onUpdate, deployedNodeI
     setDestroyPhase('destroying');
     setDestroyError('');
     try {
+      // Build list of all deployed resources for Claude dependency analysis
+      const deployedResources: { resource_type: string; resource_name: string }[] = [];
+      if (allDeployedNodes) {
+        for (const info of Object.values(allDeployedNodes)) {
+          deployedResources.push({
+            resource_type: info.resourceType,
+            resource_name: info.resourceName,
+          });
+        }
+      }
+
       const res = await fetch(DESTROY_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          project:       deployedNodeInfo.project,
-          region:        deployedNodeInfo.region,
-          resource_type: deployedNodeInfo.resourceType,
-          resource_name: deployedNodeInfo.resourceName,
+          project:            deployedNodeInfo.project,
+          region:             deployedNodeInfo.region,
+          resource_type:      deployedNodeInfo.resourceType,
+          resource_name:      deployedNodeInfo.resourceName,
+          deployed_resources: deployedResources,
         }),
       });
       const data = await res.json();
+
+      // If backend returns a dependency error, show it as a special phase
+      if (res.status === 409 && data.dependency_error) {
+        setDestroyPhase('dependency_error');
+        setDestroyError(data.explanation || data.error || 'Cannot destroy — dependencies exist.');
+        return;
+      }
+
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       commitShaRef.current = data.commit_sha;
       pollCommitStatus(data.commit_sha);
@@ -137,7 +158,7 @@ export default function PropertiesPanel({ node, onClose, onUpdate, deployedNodeI
       setDestroyPhase('error');
       setDestroyError(err instanceof Error ? err.message : 'Destroy request failed');
     }
-  }, [deployedNodeInfo, pollCommitStatus]);
+  }, [deployedNodeInfo, allDeployedNodes, pollCommitStatus]);
 
   const isDeployed = !!deployedNodeInfo;
 
@@ -236,6 +257,20 @@ export default function PropertiesPanel({ node, onClose, onUpdate, deployedNodeI
           <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-emerald-700/50 bg-emerald-950/40 text-emerald-300 text-[10px] font-semibold">
             <CheckCircle size={12} />
             Destroyed — removing from canvas…
+          </div>
+        )}
+
+        {isDeployed && destroyPhase === 'dependency_error' && (
+          <div className="rounded-lg border border-amber-600/50 bg-amber-950/40 p-3 space-y-2">
+            <div className="flex items-center gap-2 text-amber-300 text-[10px] font-semibold">
+              <XCircle size={11} />
+              Cannot destroy — dependencies exist
+            </div>
+            <p className="text-[9px] text-amber-300/90 whitespace-pre-line">{destroyError}</p>
+            <button onClick={() => { setDestroyPhase('idle'); setDestroyError(''); }}
+              className="text-[9px] text-amber-400 hover:text-amber-300 underline">
+              OK
+            </button>
           </div>
         )}
 
