@@ -118,6 +118,9 @@ export interface AWSResource {
 VITE_DEPLOY_URL=https://swocff3ol9.execute-api.us-west-2.amazonaws.com/api/deploy
 VITE_STATUS_URL=https://swocff3ol9.execute-api.us-west-2.amazonaws.com/api/status
 VITE_CHAT_URL=https://swocff3ol9.execute-api.us-west-2.amazonaws.com/api/chat
+VITE_IMPORT_URL=https://swocff3ol9.execute-api.us-west-2.amazonaws.com/api/import
+VITE_DESTROY_URL=https://swocff3ol9.execute-api.us-west-2.amazonaws.com/api/destroy
+VITE_COMMIT_STATUS_URL=https://swocff3ol9.execute-api.us-west-2.amazonaws.com/api/commit-status
 ```
 
 ---
@@ -203,19 +206,28 @@ Devops-backend/
 ├── requirements.txt           ← (root, not used by SAM — see src/requirements.txt)
 ├── src/
 │   ├── requirements.txt       ← anthropic, pygithub, boto3, pyyaml  (SAM reads from here)
-│   ├── handler.py             ← Lambda entry: 4 endpoints
+│   ├── handler.py             ← Lambda entry: 7 endpoints
 │   ├── generate_terraform.py  ← Claude classifies resources into per-module-type YAML configs
-│   ├── git_push.py            ← PyGithub: merge/append YAML into environments/dev/<type>/resources.yaml, create PR
+│   ├── git_push.py            ← PyGithub: merge/append YAML, create PR, destroy (direct commit to main), commit status polling
+│   ├── import_state.py        ← Reads S3 terraform.tfstate files, builds ReactFlow nodes/edges for canvas
 │   └── secrets_helper.py      ← AWS Secrets Manager with env-var fallback
 └── .github/workflows/
     └── deploy.yml             ← SAM build + deploy on push to main (any branch triggers validate)
 ```
 
-**handler.py — 4 Endpoints:**
-- `POST /api/chat`   — Chatbot: sends messages to Claude with DevOps system prompt, returns `{ reply }`
-- `POST /api/deploy` — Full pipeline: Claude classify → build project.yaml → push YAML to GitHub → return PR URL
-- `GET  /api/status` — Poll CI/CD status of a PR (query param: pr_url)
-- `GET  /api/health` — Health check
+**Lambda IAM permissions (template.json):**
+- `secretsmanager:GetSecretValue` — read GitHub token + Anthropic key
+- `s3:GetObject`, `s3:ListBucket` — read Terraform state files from remote state bucket
+- `sts:GetCallerIdentity` — get AWS account ID to construct bucket name `{project}-tf-state-{account_id}`
+
+**handler.py — 7 Endpoints:**
+- `POST /api/chat`          — Chatbot: sends messages to Claude with DevOps system prompt, returns `{ reply }`
+- `POST /api/deploy`        — Full pipeline: Claude classify → build project.yaml → push YAML to GitHub → return PR URL
+- `GET  /api/status`        — Poll CI/CD status of a PR (query param: pr_url)
+- `GET  /api/health`        — Health check
+- `GET  /api/import`        — Read all terraform.tfstate files from S3 remote state, return ReactFlow canvas nodes/edges (query params: project, region)
+- `POST /api/destroy`       — Remove a resource from resources.yaml, commit directly to main (triggers apply/destroy). Body: { project, region, resource_type, resource_name }
+- `GET  /api/commit-status` — Poll GitHub Actions check runs for a specific commit SHA (query param: sha). Used to track destroy apply progress.
 
 **generate_terraform.py:**
 - `generate_resource_yamls(payload, anthropic_api_key, model="claude-sonnet-4-6")` — accepts model param
@@ -264,7 +276,7 @@ devops-infra-live/
 ├── environments/
 │   ├── terragrunt.hcl                    ← Root: S3 remote state + AWS provider generation
 │   └── dev/
-│       ├── project.yaml                  ← { project: "my-infra", region: "us-east-1" }
+│       ├── project.yaml                  ← { project: "my-infra", region: "us-west-2" }  ← ACTUAL DEPLOYED REGION
 │       └── <type>/
 │           ├── terragrunt.hcl            ← Static, points at module, declares dependencies
 │           └── resources.yaml            ← Written/merged by Lambda
@@ -378,3 +390,102 @@ Each module uses `for_each = var.resources` to accept a map of resource configs.
     `file(find_in_parent_folders("project.yaml"))` — `find_in_parent_folders` resolves from the child
     module's directory context (e.g. `environments/dev/alb/`) and correctly traverses up to find
     `environments/dev/project.yaml`.
+
+12. **S3 remote state bucket name collision** — `bucket = "${local.project}-tf-state"` resolved to
+    `my-infra-tf-state` which is a globally unique S3 name already taken by another AWS account.
+    Fixed: `bucket = "${local.project}-tf-state-${get_aws_account_id()}"` and same for DynamoDB lock table.
+    Terragrunt `get_aws_account_id()` is a built-in that returns the current AWS account ID.
+
+---
+
+## New Features Added (Session 2)
+
+### 1. Import State (GET /api/import)
+Reads all `terraform.tfstate` files from `s3://{project}-tf-state-{account_id}/environments/dev/*/`
+and returns ReactFlow-compatible nodes and edges for the canvas.
+
+- **Backend:** `src/import_state.py` — S3 state parser. Maps Terraform resource types (aws_vpc, aws_subnet, etc.)
+  to frontend resource IDs. Builds layout: VPCs as large containers, subnets nested inside, others in a grid below.
+- **Frontend:** "Import State" button in DeployBar. Uses `VITE_IMPORT_URL`. On success, dispatches
+  `load-canvas` custom event to replace canvas nodes/edges. Also calls `onImportSucceeded` callback
+  which marks all imported nodes as deployed (green + locked).
+- **IMPORTANT:** Always select `us-west-2` region (matches project.yaml) when importing.
+
+### 2. Deployed Node State (Green + Locked)
+After deploy apply succeeds OR after Import State, nodes are marked as deployed in localStorage
+under key `devops-deployed-nodes: Record<nodeId, DeployedNodeInfo>`.
+
+**DeployedNodeInfo shape:**
+```typescript
+{ project: string; region: string; resourceType: string; resourceName: string }
+```
+
+**Visual:** Deployed nodes get green border + `🔒 live` badge.
+- `AWSNode`: green border ring + "live" label
+- `ContainerNode`: solid green border (replaces dashed), green-tinted bg
+
+**Locking:** `handleNodesChange` in ArchitectureCanvas filters out `remove` changes for deployed node IDs.
+Shows toast: "Deployed resources are locked. Use Destroy in the Properties panel..."
+
+**State management (`App.tsx`):**
+- `deployedNodes: Record<string, DeployedNodeInfo>` — loaded from/saved to localStorage
+- `pendingBatch` — captured when Deploy is clicked (node IDs + resource info)
+- `handleDeployStarted(project, region)` — captures pending batch from current canvas nodes
+- `handleApplySucceeded()` — promotes pending batch to deployed (called when `pr_merged && overall_status === 'success'`)
+- `handleImportSucceeded(nodes, project, region)` — marks imported nodes as deployed
+- `handleNodeDestroyed(nodeId)` — removes from deployed state + dispatches `delete-canvas-node` event
+
+**Context:** `src/contexts/DeployedNodesContext.ts` — React context providing `ReadonlySet<string>` of
+deployed node IDs. `AWSNode` and `ContainerNode` use `useIsNodeDeployed(id)` hook to style themselves.
+App.tsx wraps everything in `<DeployedNodesContext.Provider value={deployedNodeIds}>`.
+
+### 3. Destroy Resource (POST /api/destroy)
+Removes a specific resource from `resources.yaml` and commits directly to main (no PR).
+Direct push to main triggers the apply workflow which runs `terraform destroy` for that resource.
+
+**Backend:**
+- `git_push.py`: `push_destroy_to_main(github_token, repo_name, project, resource_type, resource_name, commit_message)`
+  — reads YAML, deletes the key, commits to main, returns `{ commit_sha }`
+- `git_push.py`: `get_commit_status(github_token, repo_name, commit_sha)`
+  — polls check runs on a specific commit SHA (same logic as PR status but for direct commits)
+- `handler.py`: `POST /api/destroy` — body: `{ project, region, resource_type, resource_name }`
+- `handler.py`: `GET /api/commit-status?sha=<sha>` — returns `{ overall_status, checks, commit_sha }`
+
+**Frontend (PropertiesPanel):**
+Deployed nodes show a "Destroy Resource" button in the Properties panel footer.
+Destroy flow phases: `idle → confirm → destroying → polling → success/error`
+- `confirm` phase: shows inline confirm box with resource name + warning text
+- `destroying` phase: POSTs to `VITE_DESTROY_URL`
+- `polling` phase: polls `VITE_COMMIT_STATUS_URL?sha=...` every 8s
+- `success` phase: calls `onNodeDestroyed(nodeId)` → App.tsx removes from canvas + deployed state
+- `error` phase: shows error with "Try again" link
+
+**Canvas removal on destroy success:**
+ArchitectureCanvas listens for `delete-canvas-node` custom event (dispatched by App.tsx).
+Also removes all edges where source or target === destroyed nodeId.
+
+### 4. Custom Events Summary (all window events)
+| Event | Direction | Payload | Purpose |
+|-------|-----------|---------|---------|
+| `place-resource` | → Canvas | `{ resource: AWSResource }` | Click-to-place from sidebar |
+| `update-node-config` | → Canvas | `{ id, config }` | PropertiesPanel updates node |
+| `canvas-save` | → Canvas | none | Manual save trigger |
+| `canvas-save-status` | Canvas → | `{ detail: 'idle'/'saving'/'saved' }` | Save status feedback |
+| `load-canvas` | → Canvas | `{ nodes, edges }` | Import State loads nodes |
+| `delete-canvas-node` | → Canvas | `{ nodeId }` | Post-destroy node removal |
+
+### 5. DeployBar new props
+```typescript
+onDeployStarted?: (project: string, region: string) => void   // called on deploy click
+onApplySucceeded?: () => void                                   // called when apply CI succeeds
+onImportSucceeded?: (nodes: any[], project: string, region: string) => void  // called after import
+```
+
+### 6. Import URL region issue
+The import reads from `s3://{project}-tf-state-{account_id}/`. The actual deployed project is
+`my-infra` in `us-west-2`. Always select `us-west-2` in the deploy bar region dropdown before
+clicking Import State. Wrong region in the request doesn't fail S3 access (S3 is global) but
+may confuse bucket resolution in future if region-specific paths are added.
+
+### 7. .env.local changes need dev server restart
+Vite does NOT hot-reload `.env.local`. After adding new `VITE_*` vars, must `Ctrl+C` → `npm run dev`.

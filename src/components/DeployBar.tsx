@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { Node, Edge } from 'reactflow';
-import { Rocket, Eye, X, CheckCircle, XCircle, Loader2, Copy, Check, ChevronDown, ExternalLink, RefreshCw, Download } from 'lucide-react';
+import { Rocket, Eye, X, CheckCircle, XCircle, Loader2, Copy, Check, ChevronDown, ExternalLink, RefreshCw, Download, Plus } from 'lucide-react';
 import { buildDeployPayload, DeployPayload } from '../utils/deployPayload';
 import { loadCanvasFromImport } from './ArchitectureCanvas';
 
@@ -21,6 +21,25 @@ const MODELS = [
 ] as const;
 
 type ModelId = typeof MODELS[number]['id'];
+
+const PROJECTS_KEY = 'devops-saved-projects';
+
+interface SavedProject {
+  name: string;
+  region: string;
+}
+
+function loadSavedProjects(): SavedProject[] {
+  try {
+    const raw = localStorage.getItem(PROJECTS_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) && list.length > 0 ? list : [{ name: 'my-infra', region: 'us-east-1' }];
+  } catch { return [{ name: 'my-infra', region: 'us-east-1' }]; }
+}
+
+function saveSavedProjects(projects: SavedProject[]) {
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects)); } catch { /* storage full */ }
+}
 
 interface DeployResult {
   branch: string;
@@ -56,10 +75,15 @@ interface Props {
 }
 
 export default function DeployBar({ nodes, edges, deployedNodeIds = new Set(), onDeployStarted, onApplySucceeded, onImportSucceeded }: Props) {
-  const [region, setRegion] = useState('us-east-1');
+  const [savedProjects, setSavedProjects] = useState<SavedProject[]>(loadSavedProjects);
+  const [region, setRegion] = useState(() => loadSavedProjects()[0]?.region ?? 'us-east-1');
   const [model, setModel] = useState<ModelId>('claude-sonnet-4-6');
-  const [projectName, setProjectName] = useState('my-infra');
+  const [projectName, setProjectName] = useState(() => loadSavedProjects()[0]?.name ?? 'my-infra');
   const [projectNameError, setProjectNameError] = useState('');
+  const [showNewProject, setShowNewProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectNameError, setNewProjectNameError] = useState('');
+  const [newProjectRegion, setNewProjectRegion] = useState('us-east-1');
   const [deployStatus, setDeployStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [deployResult, setDeployResult] = useState<DeployResult | null>(null);
@@ -76,6 +100,17 @@ export default function DeployBar({ nodes, edges, deployedNodeIds = new Set(), o
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
+  }, []);
+
+  const upsertProject = useCallback((name: string, reg: string) => {
+    setSavedProjects(prev => {
+      const idx = prev.findIndex(p => p.name === name);
+      const next = idx >= 0
+        ? prev.map((p, i) => i === idx ? { name, region: reg } : p)
+        : [...prev, { name, region: reg }];
+      saveSavedProjects(next);
+      return next;
+    });
   }, []);
 
   const pollCIStatus = useCallback((prUrl: string) => {
@@ -128,6 +163,7 @@ export default function DeployBar({ nodes, edges, deployedNodeIds = new Set(), o
     setErrorMsg('');
     setDeployResult(null);
     onDeployStarted?.(projectName, region);
+    upsertProject(projectName, region);
 
     try {
       const res = await fetch(DEPLOY_URL, {
@@ -148,7 +184,7 @@ export default function DeployBar({ nodes, edges, deployedNodeIds = new Set(), o
       setDeployStatus('error');
       setErrorMsg(err instanceof Error ? err.message : 'Deployment failed');
     }
-  }, [nodes, deployStatus, projectName, region, getPayload, onDeployStarted]);
+  }, [nodes, deployStatus, projectName, region, getPayload, onDeployStarted, upsertProject]);
 
   const handleImport = useCallback(async () => {
     if (importStatus === 'loading') return;
@@ -171,13 +207,27 @@ export default function DeployBar({ nodes, edges, deployedNodeIds = new Set(), o
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       loadCanvasFromImport(data.nodes, data.edges);
       onImportSucceeded?.(data.nodes, projectName, region);
+      upsertProject(projectName, region);
       setImportStatus('idle');
     } catch (err) {
       setImportStatus('error');
       setImportError(err instanceof Error ? err.message : 'Import failed');
       setTimeout(() => setImportStatus('idle'), 5000);
     }
-  }, [importStatus, projectName, region, nodes.length, onImportSucceeded]);
+  }, [importStatus, projectName, region, nodes.length, onImportSucceeded, upsertProject]);
+
+  const handleSaveNewProject = useCallback(() => {
+    if (!PROJECT_NAME_RE.test(newProjectName)) {
+      setNewProjectNameError('Use lowercase letters, numbers, and hyphens only (e.g. my-infra)');
+      return;
+    }
+    upsertProject(newProjectName, newProjectRegion);
+    setProjectName(newProjectName);
+    setRegion(newProjectRegion);
+    setShowNewProject(false);
+    setNewProjectName('');
+    setNewProjectNameError('');
+  }, [newProjectName, newProjectRegion, upsertProject]);
 
   const handleCopy = useCallback(() => {
     const json = JSON.stringify(getPayload(), null, 2);
@@ -305,26 +355,72 @@ export default function DeployBar({ nodes, edges, deployedNodeIds = new Set(), o
 
           <div className="w-px h-5 bg-slate-700/60" />
 
-          {/* Project name */}
-          <div className="flex items-center gap-2">
+          {/* Project selector */}
+          <div className="flex items-center gap-2 relative">
             <label className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold">Project</label>
-            <div className="flex flex-col gap-0.5">
-              <input
-                type="text"
+            <div className="relative">
+              <select
                 value={projectName}
                 onChange={(e) => {
-                  setProjectName(e.target.value);
-                  if (projectNameError) setProjectNameError('');
+                  const proj = savedProjects.find(p => p.name === e.target.value);
+                  if (proj) { setProjectName(proj.name); setRegion(proj.region); }
                 }}
-                className={`bg-slate-800/80 border rounded-lg px-2.5 py-1 text-xs text-slate-200 outline-none w-28 transition-colors placeholder:text-slate-600 ${
-                  projectNameError ? 'border-red-500/70 focus:border-red-400' : 'border-slate-700/60 focus:border-indigo-500/60'
-                }`}
-                placeholder="my-infra"
-              />
-              {projectNameError && (
-                <span className="text-[9px] text-red-400 leading-tight">{projectNameError}</span>
-              )}
+                className="bg-slate-800/80 border border-slate-700/60 rounded-lg px-2.5 py-1 pr-7 text-xs text-slate-200 outline-none focus:border-indigo-500/60 appearance-none cursor-pointer transition-colors"
+              >
+                {savedProjects.map(p => (
+                  <option key={p.name} value={p.name}>{p.name}</option>
+                ))}
+              </select>
+              <ChevronDown size={10} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
             </div>
+            <button
+              onClick={() => { setShowNewProject(v => !v); setNewProjectName(''); setNewProjectNameError(''); }}
+              className="p-1 rounded-md bg-slate-800/60 border border-slate-700/50 text-slate-400 hover:text-slate-200 hover:border-slate-600 transition-all"
+              title="Add new project"
+            >
+              <Plus size={11} />
+            </button>
+            {/* New project popover */}
+            {showNewProject && (
+              <div className="absolute bottom-full mb-2 left-0 bg-slate-900 border border-slate-700/60 rounded-xl shadow-2xl p-3 flex flex-col gap-2 z-50 min-w-[200px]">
+                <p className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold">New Project</p>
+                <input
+                  type="text"
+                  value={newProjectName}
+                  onChange={e => { setNewProjectName(e.target.value); if (newProjectNameError) setNewProjectNameError(''); }}
+                  placeholder="project-name"
+                  autoFocus
+                  className={`bg-slate-800/80 border rounded-lg px-2.5 py-1 text-xs text-slate-200 outline-none w-full transition-colors placeholder:text-slate-600 ${
+                    newProjectNameError ? 'border-red-500/70' : 'border-slate-700/60 focus:border-indigo-500/60'
+                  }`}
+                />
+                {newProjectNameError && <span className="text-[9px] text-red-400 -mt-1 leading-tight">{newProjectNameError}</span>}
+                <div className="relative">
+                  <select
+                    value={newProjectRegion}
+                    onChange={e => setNewProjectRegion(e.target.value)}
+                    className="w-full bg-slate-800/80 border border-slate-700/60 rounded-lg px-2.5 py-1 pr-7 text-xs text-slate-200 outline-none focus:border-indigo-500/60 appearance-none"
+                  >
+                    {REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                  <ChevronDown size={10} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleSaveNewProject}
+                    className="flex-1 flex items-center justify-center gap-1 px-3 py-1 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-500/60 transition-all"
+                  >
+                    <Check size={11} /> Save
+                  </button>
+                  <button
+                    onClick={() => setShowNewProject(false)}
+                    className="px-2 py-1 rounded-lg text-xs text-slate-400 hover:text-slate-200 border border-slate-700/50 hover:border-slate-600 transition-all"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Region selector */}
