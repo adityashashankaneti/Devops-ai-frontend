@@ -46,10 +46,11 @@ export default function App() {
   const deployedNodeIds = useMemo(() => new Set(Object.keys(deployedNodes)), [deployedNodes]);
 
   // ── Callbacks for DeployBar ───────────────────────────────────────────────
-  /** Called when the deploy button is clicked — captures which nodes are being deployed. */
+  /** Called when the deploy button is clicked — captures only NEW (undeployed) nodes. */
   const handleDeployStarted = useCallback((project: string, region: string) => {
+    const newNodes = canvasNodes.filter((n) => !deployedNodeIds.has(n.id));
     const nodeInfoMap: Record<string, { resourceType: string; resourceName: string }> = {};
-    for (const node of canvasNodes) {
+    for (const node of newNodes) {
       nodeInfoMap[node.id] = {
         resourceType: (node.data as AWSResource).id,
         resourceName: ((node.data as AWSResource & { config?: Record<string, unknown> }).config?.name as string)
@@ -59,10 +60,10 @@ export default function App() {
     setPendingBatch({
       project,
       region,
-      nodeIds: canvasNodes.map((n) => n.id),
+      nodeIds: newNodes.map((n) => n.id),
       nodeInfoMap,
     });
-  }, [canvasNodes]);
+  }, [canvasNodes, deployedNodeIds]);
 
   /** Called when CI apply succeeds — promotes pending batch to deployed. */
   const handleApplySucceeded = useCallback(() => {

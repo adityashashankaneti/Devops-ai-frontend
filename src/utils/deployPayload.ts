@@ -64,16 +64,39 @@ export function buildDeployPayload(
     };
   };
 
-  // Only top-level nodes (no parentNode) are roots
-  const resources = nodes
-    .filter((n) => !n.parentNode)
-    .map(buildResource);
+  // Build resource tree with only deployed children (for context)
+  const buildDeployedResource = (node: Node): DeployResource => {
+    const data = node.data as AWSResource & { config?: Record<string, unknown> };
+    const children = nodes
+      .filter((n) => n.parentNode === node.id && deployedNodeIds.has(n.id))
+      .map(buildDeployedResource);
 
-  // Already-deployed nodes sent as context so Claude can derive sensible defaults
-  // (e.g. subnet CIDRs from existing VPC CIDR)
+    return {
+      id: node.id,
+      resourceType: data.id,
+      name: (data.config?.name as string) || data.name,
+      properties: data.config ?? {},
+      children,
+    };
+  };
+
+  // NEW (blue) resources to deploy:
+  // 1. Top-level new nodes (e.g. standalone S3 bucket)
+  // 2. New nodes inside deployed containers (e.g. new EC2 in existing subnet)
+  const newTopLevel = nodes
+    .filter((n) => !n.parentNode && !deployedNodeIds.has(n.id))
+    .map(buildResource);
+  const newChildrenOfDeployed = nodes
+    .filter((n) => n.parentNode && !deployedNodeIds.has(n.id)
+      && deployedNodeIds.has(n.parentNode))
+    .map(buildResource);
+  const resources = [...newTopLevel, ...newChildrenOfDeployed];
+
+  // Already-deployed (green/locked) nodes sent as context only so Claude
+  // can reference their exact names (vpc_name, subnet_name, etc.)
   const existing_resources = nodes
     .filter((n) => deployedNodeIds.has(n.id) && !n.parentNode)
-    .map(buildResource);
+    .map(buildDeployedResource);
 
   const connections: DeployConnection[] = edges.map((edge) => {
     const src = nodeMap.get(edge.source)?.data as (AWSResource & { config?: Record<string, unknown> }) | undefined;
