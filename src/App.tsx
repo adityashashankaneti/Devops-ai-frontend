@@ -38,6 +38,7 @@ export default function App() {
   const [selectedNode, setSelectedNode] = useState<Node<AWSResource> | null>(null);
   const [canvasNodes, setCanvasNodes] = useState<Node[]>([]);
   const [canvasEdges, setCanvasEdges] = useState<Edge[]>([]);
+  const [projectRegion, setProjectRegion] = useState('us-east-1');
 
   // ── Deployed state ───────────────────────────────────────────────────────
   const [deployedNodes, setDeployedNodes] = useState<Record<string, DeployedNodeInfo>>(loadDeployedNodes);
@@ -171,6 +172,7 @@ export default function App() {
                 onDeployStarted={handleDeployStarted}
                 onApplySucceeded={handleApplySucceeded}
                 onImportSucceeded={handleImportSucceeded}
+                onRegionChange={setProjectRegion}
               />
             )}
           </main>
@@ -183,6 +185,7 @@ export default function App() {
               deployedNodeInfo={deployedNodes[selectedNode.id]}
               onNodeDestroyed={handleNodeDestroyed}
               allDeployedNodes={deployedNodes}
+              projectRegion={projectRegion}
             />
           )}
         </div>

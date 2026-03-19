@@ -71,11 +71,16 @@ interface Props {
   onApplySucceeded?: () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onImportSucceeded?: (importedNodes: any[], project: string, region: string) => void;
+  onRegionChange?: (region: string) => void;
 }
 
-export default function DeployBar({ nodes, edges, deployedNodeIds = new Set(), onDeployStarted, onApplySucceeded, onImportSucceeded }: Props) {
+export default function DeployBar({ nodes, edges, deployedNodeIds = new Set(), onDeployStarted, onApplySucceeded, onImportSucceeded, onRegionChange }: Props) {
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>(loadSavedProjects);
-  const [region, setRegion] = useState(() => loadSavedProjects()[0]?.region ?? 'us-east-1');
+  const [region, setRegionRaw] = useState(() => loadSavedProjects()[0]?.region ?? 'us-east-1');
+  const setRegion = useCallback((r: string) => {
+    setRegionRaw(r);
+    onRegionChange?.(r);
+  }, [onRegionChange]);
   const [model, setModel] = useState<ModelId>('claude-sonnet-4-6');
   const [projectName, setProjectName] = useState(() => loadSavedProjects()[0]?.name ?? 'my-infra');
   const [projectNameError, setProjectNameError] = useState('');
@@ -93,6 +98,9 @@ export default function DeployBar({ nodes, edges, deployedNodeIds = new Set(), o
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [importStatus, setImportStatus] = useState<'idle' | 'loading' | 'error'>('idle');
   const [importError, setImportError] = useState('');
+
+  // Notify parent of initial region on mount
+  useEffect(() => { onRegionChange?.(region); }, []);
 
   // Cleanup polling on unmount
   useEffect(() => {

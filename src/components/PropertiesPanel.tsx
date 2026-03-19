@@ -14,6 +14,7 @@ interface Props {
   deployedNodeInfo?: DeployedNodeInfo;
   onNodeDestroyed?: (nodeId: string) => void;
   allDeployedNodes?: Record<string, DeployedNodeInfo>;
+  projectRegion?: string;
 }
 
 function ToggleField({
@@ -62,11 +63,11 @@ function InputField({
 
 type DestroyPhase = 'idle' | 'confirm' | 'destroying' | 'polling' | 'success' | 'dependency_error' | 'error';
 
-export default function PropertiesPanel({ node, onClose, onUpdate, deployedNodeInfo, onNodeDestroyed, allDeployedNodes }: Props) {
+export default function PropertiesPanel({ node, onClose, onUpdate, deployedNodeInfo, onNodeDestroyed, allDeployedNodes, projectRegion }: Props) {
   if (!node) return null;
 
   const resource = node.data;
-  const fields   = getFieldsForResource(resource.id);
+  const fields   = getFieldsForResource(resource.id, projectRegion);
   const config: Record<string, string | boolean | number> = node.data.config ?? {};
 
   const getValue = (field: FieldDef) => {
